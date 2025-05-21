@@ -60,7 +60,7 @@ class TriAngleRectifyWithDelaunay:
         #     else:
         #         th -= 0.1*v
         bkg = sep.Background(img, bw=32, bh=32, fw=3, fh=3)
-        objects, imgBi = sep.extract(img, 1.5, err=bkg.globalrms, filter_type='conv', deblend_cont=1, segmentation_map=True)
+        objects, imgBi = sep.extract(img, 3, err=bkg.globalrms, filter_type='conv', deblend_cont=1, segmentation_map=True)
         ret, labels, stats, centroids = cv2.connectedComponentsWithStats(np.asarray(imgBi>0, np.uint8))
         sortIdx = np.argsort(stats[:, -1])
         self.pointsStars = centroids[sortIdx][-self.numStars-1:-1]

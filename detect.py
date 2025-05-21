@@ -43,8 +43,8 @@ def extract_sep(img, th=5, deblend_cont=1.0):
     kernel =  np.array([[1,2,1], [2,4,2], [1,2,1]], np.float32)
     objects = sep.extract(img, th, err=bkg.globalrms, filter_kernel=kernel, filter_type='conv', deblend_cont=deblend_cont)
     coords = [[obj['x'], obj['y']] for obj in objects]
-    coords = (np.array(coords)+0.5).astype(np.int32)
-    return coords
+    # coords = (np.array(coords)+0.5).astype(np.int32)
+    return np.array(coords)
 
 def extract_NTH(img, ratio=1, flagRetMap=False):
     img = img.astype(np.float32)

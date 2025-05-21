@@ -338,4 +338,4 @@ def get_roi(img, x, y, r, flagPadding=False, flatCopy=True):
 
 
 if __name__ == '__main__':
-    decodeImgDir('./imgs/20221025', 'fits', scale=0.5, ratioTrunc=2)
+    decodeImgDir('./imgs/Phineas_1', 'fits', scale=0.5, ratioTrunc=2)

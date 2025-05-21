@@ -5,8 +5,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from scipy import stats
-from astropy.io import fits
-from datetime import datetime
 
 from tool import load_img, show_img, draw3D, ax_imshow, get_fileList, get_roi, convert_16_to_RGB
 from detect import extract, extract_sep, extract_NTH, nms
@@ -80,7 +78,7 @@ class Track(object):
 class DBT(object):
     def __init__(self, path, task, postfix='fits', scale=0.2, method='SEP'):
         # params filtering stars
-        self.th_dis = 10
+        self.th_dis = 5
 
         # params for association
         self.r_associate = 30
@@ -106,19 +104,10 @@ class DBT(object):
         self.postfix = postfix
         if isinstance(path, str):
             self.path_task_dir = path
-            self.list_imgs = [os.path.join(self.path_task_dir, i) 
-                              for i in os.listdir(self.path_task_dir) if i.endswith(postfix)]
+            self.list_imgs = [os.path.join(self.path_task_dir, i) for i in os.listdir(self.path_task_dir) if i.endswith(postfix)]
         elif isinstance(path, list):
             self.path_task_dir = os.path.dirname(path[0])
             self.list_imgs = path
-
-
-    def imread(self, path_fits):
-        raw_picture=fits.open(path_fits, ignore_missing_simple=True)   
-        header = raw_picture[0].header             #看头文件
-        img = raw_picture[0].data
-        return np.ascontiguousarray(img, np.float32), header
-
 
     def preprocess(self, img):
         img = cv2.medianBlur(img, 3)
@@ -188,25 +177,13 @@ class DBT(object):
         return pts_cur, map_sus    
     
 
-    def get_intertime(self, header1, header2):
-        t1 = header1['DATE-OBS']
-        exp1 = header1['EXPTIME']
-        obj1 = datetime.fromisoformat(t1)
-        t2 = header2['DATE-OBS']
-        exp2 = header2['EXPTIME']
-        obj2 = datetime.fromisoformat(t2)
-        diff_obj = obj2 - obj1
-        delta_t = diff_obj.total_seconds() + (exp2-exp1)/2
-        return delta_t
-    
-
-    def associate_tracks(self, idx, map_sus, pts_cur, delta_t):
+    def associate_tracks(self, idx, map_sus, pts_cur):
         for i, track in enumerate(self.tracks):
             # filter false tracks
             pt_last = track.cur_pt
             if (pt_last.conf<0): continue
             # track predict
-            xf, yf = pt_last.x+track.vx*delta_t, pt_last.y+track.vy*delta_t
+            xf, yf = pt_last.x+track.vx, pt_last.y+track.vy
             map_roi = get_roi(map_sus, xf, yf, self.r_search, False, flatCopy=False)
             if map_roi.sum() > 0:  
                 ys_roi, xs_roi = np.where(map_roi)
@@ -214,7 +191,7 @@ class DBT(object):
                 pos = np.argmin((xs-xf)**2+(ys-yf)**2)
                 tar_idx = int(map_roi[ys_roi[pos], xs_roi[pos]])
                 x_pred, y_pred = pts_cur[tar_idx-1]
-                vx, vy = (x_pred-pt_last.x)/delta_t, (y_pred-pt_last.y)/delta_t
+                vx, vy = x_pred-pt_last.x, y_pred-pt_last.y
                 conf = pt_last.conf+1
                 ang = abs(self.cal_angle((vx, vy), (track.vx, track.vy)))
                 if ang < self.th_ang:
@@ -226,7 +203,7 @@ class DBT(object):
                 track.append(pt_new)
 
 
-    def initialize_tracks(self, idx, map_sus, pts_last, pts_cur, H12, delta_t):
+    def initialize_tracks(self, idx, map_sus, pts_last, pts_cur, H12):
         pts_base = pts_last.copy()
         pts_last = registerPoints(pts_last, H12)
         for i, pt_last in enumerate(pts_last):
@@ -240,7 +217,7 @@ class DBT(object):
             for j in range(xs.size):
                 tar_idx = int(roi_sus[ys[j], xs[j]])
                 x, y = pts_cur[tar_idx-1]
-                vx, vy = (x-x_last)/delta_t, (y-y_last)/delta_t
+                vx, vy = x-x_last, y-y_last
                 x0, y0 = pts_base[i][0], pts_base[i][1]
                 pt0 = PT(idx-1, x_last, y_last, vx, vy, 1, 1, x0, y0)
                 pt1 = PT(idx, x, y, vx, vy, 1, 2)
@@ -250,16 +227,14 @@ class DBT(object):
 
     def main(self):
         # last frame & source extraction
-        raw1, header1 = self.imread(self.list_imgs[0])
-        img1 = self.preprocess(raw1)
+        img1 = self.preprocess(load_img(self.list_imgs[0]))
         pts_last = self.extract(img1)
         for idx in tqdm(range(len(self.list_imgs)-1), desc=self.task):
             # current frame & source extraction
-            raw2, header2 = self.imread(self.list_imgs[idx+1])
-            img2 = self.preprocess(raw2)
+            img2 = self.preprocess(load_img(self.list_imgs[idx+1]))
             
             # image registration
-            H12, img12 = self.register_img(img1, img2, flag_img=True)
+            H12, img12 = self.register_img(img1, img2, flag_img=True, ratio=0.08)
 
             # tracks registration
             self.register_tracks(H12)
@@ -272,17 +247,14 @@ class DBT(object):
             pts_cur, map_sus = self.filter_non_targets(pts1, pts2, H12)
 
             if idx > 0: 
-                # get interframe interval
-                delta_t = self.get_intertime(header1, header2)
-
                 # track association
-                self.associate_tracks(idx, map_sus, pts_cur, delta_t)
+                self.associate_tracks(idx, map_sus, pts_cur)
 
                 # track initilization
-                self.initialize_tracks(idx, map_sus, pts_last, pts_cur, H12, delta_t)
+                self.initialize_tracks(idx, map_sus, pts_last, pts_cur, H12)
                 
             # upadte
-            img1, header1 = img2, header2
+            img1 = img2
             self.sus.append(pts_last)
             pts_last = pts_cur
 
@@ -290,16 +262,17 @@ class DBT(object):
         self.find_true_tracks()
 
         # print & show
-        self.print_tracks(self.tracks_true)
-        # plt.ion()
+        # self.print_tracks(self.tracks_true)
+        plt.ion()
         fig, _ = show_img(img2)
         self.show_tracks(self.tracks_true, fig)
-        plt.show()
+        # plt.show()
         plt.close('all')
 
         # save
-        self.save_tracks(self.tracks_true)
+        # self.save_tracks(self.tracks_true)
         self.save_tracks_txt(self.tracks_true)
+
 
     def find_true_tracks(self, th_len=3, th_conf=5):
         tracks_true = []
@@ -347,7 +320,7 @@ class DBT(object):
         dir_save = os.path.join(self.path_task_dir, 'results', self.task)
         if not os.path.exists(dir_save): os.makedirs(dir_save)
         for idx, path_img in enumerate(self.list_imgs[1:]):
-            img = self.preprocess(self.imread(path_img)[0])
+            img = self.preprocess(load_img(path_img))
             img_rgb = convert_16_to_RGB(img)
             for track in tracks:
                 for pt in track.traj:
@@ -357,7 +330,7 @@ class DBT(object):
             path_save = os.path.join(dir_save, name_img)
             cv2.imwrite(path_save, img_rgb)
         print('Results sucessfully saved in ', dir_save)
-
+    
 
     def save_tracks_txt(self, tracks:list[Track]):
         dir_save = os.path.join(self.path_task_dir, 'results', self.task)
@@ -374,7 +347,8 @@ class DBT(object):
         with open(path_save, 'w') as f:
             f.write('ID, IMG, TRACK_ID, x0, y0, TRACK_ID, x1, y1, ...\n')
             f.write(line)
-        print('Results sucessfully saved in ', path_save)   
+        print('Results sucessfully saved in ', path_save)
+        
 
 
 def process_CLASP_seqs(dir_path):
@@ -398,9 +372,5 @@ def process_CLASP_seqs(dir_path):
 
 
 if __name__ == '__main__':
-    # process_CLASP_seqs('./imgs/20220929')
-
-    task='SKYMAPPER0033'
-    imgs = [x for x in get_fileList('./imgs/20221025') if task in x]
-    detector = DBT(imgs, task=task, scale=0.2)
+    detector = DBT('./imgs/Phineas_2', task='test1', scale=0.5)
     detector.main()

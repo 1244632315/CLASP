@@ -4,7 +4,7 @@ import astroalign as aa
 import numpy as np
 import matplotlib.pyplot as plt
 
-from tool import load_img, show_img, draw3D, ax_imshow, get_fileList
+from tool import load_img, show_img, draw3D, ax_imshow, get_fileList, get_roi
 from detect import extract, extract_sep, extract_NTH, nms
 
 
@@ -23,7 +23,7 @@ def view_img():
 
 
 def main():
-    list_imgs = get_fileList('./imgs')
+    list_imgs = get_fileList('./imgs/test')
     for idx in range(len(list_imgs)-1):
         img1 = load_img(list_imgs[idx])
         img2 = load_img(list_imgs[idx+1])
@@ -49,13 +49,15 @@ def main():
 
 if __name__ == '__main__':
     img = load_img('./imgs/test/SKYMAPPER0015-CAM1-20221130001035774.fits')
-    h, w = img.shape[:2]
-    nw, nh = int(w*0.1), int(h*0.1)
-    new_img = cv2.resize(img, (nw, nh))
-    u, v = new_img.mean(), new_img.std()
-    vmax, vmin = u+2*v, u-2*v
-    oup = np.clip(new_img, vmin, vmax)
-    oup = ((oup-vmin)/(vmax-vmin)*255).astype(np.uint8)
-    cv2.imwrite('./test.png', oup)
-
+    
+    plt.ion()
+    show_img(img)
+    roi = get_roi(img, 1160, 2445, 80)
+    draw3D(roi)
+    
+    
+    bkg = sep.Background(img, bw=32, bh=32, fw=3, fh=3)
+    objects, imgBi = sep.extract(img, 1.5, err=bkg.globalrms, filter_type='conv', deblend_cont=1, segmentation_map=True)
+    
+    plt.show()
 
