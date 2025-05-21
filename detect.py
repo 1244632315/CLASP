@@ -1,155 +1,408 @@
-import numpy as np
+import os
 import cv2
 import sep
+import numpy as np
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from scipy import stats
+from astropy.io import fits
+from datetime import datetime
 
-from tool import get_roi
-
-def get_logKernel(k=11):        
-    g = np.zeros((k,k))
-    for x in range(k):
-        for y in range(k):
-            sigma = (k-1)/6
-            x0 = k//2
-            y0 = k//2
-            f = np.exp(((x-x0)**2+(y-y0)**2)/(-2*sigma**2))
-            g[x,y] = f
-    return g.astype(np.float32)
-
-def extract(img, thSeg=0.3, kz=11, flagRetImg=False):
-    thArea = 4
-    img = np.array(img, np.float32)
-    h, w = img.shape[:2]
-    k = get_logKernel(kz).astype(np.float32)
-    salientMap = cv2.matchTemplate(img, k, 5)
-    u, v = salientMap.mean(), salientMap.std()
-    # thSeg = (u+ratioSeg*v) if (u+ratioSeg*v) <= thSegTop else thSegTop
-    mask = (salientMap > thSeg).astype(np.uint8)
-    ret, labels, stats, cens = cv2.connectedComponentsWithStats(mask)
-    maskarea = stats[:, -1] > thArea
-    coords = cens[maskarea][1:]
-    coords = (np.array(coords)+0.5+kz//2).astype(np.int64)
-    if flagRetImg:
-        ret = np.zeros_like(img)
-        ret[kz//2:-kz//2+1, kz//2:-kz//2+1] = salientMap
-        return coords, ret
-    else:
-        return coords
-
-def extract_sep(img, th=5, deblend_cont=1.0):
-    img = np.asarray(img, np.float32)
-    bkg = sep.Background(img, bw=32, bh=32, fw=3, fh=3)
-    imgBkg = np.array(bkg)
-    img -= imgBkg
-    kernel =  np.array([[1,2,1], [2,4,2], [1,2,1]], np.float32)
-    objects = sep.extract(img, th, err=bkg.globalrms, filter_kernel=kernel, filter_type='conv', deblend_cont=deblend_cont)
-    coords = [[obj['x'], obj['y']] for obj in objects]
-    # coords = (np.array(coords)+0.5).astype(np.int32)
-    return np.array(coords)
-
-def extract_NTH(img, ratio=1, flagRetMap=False):
-    img = img.astype(np.float32)
-    # white top hat
-    kz1 = 5     # 5
-    kz2 = 9     # 9
-    thArea = 2
-    k1 = np.ones((kz2, kz2), np.uint8)
-    k1[kz2//2-kz1//2:kz2//2+kz1//2+1, kz2//2-kz1//2:kz2//2+kz1//2+1] = 0
-    k2 = np.ones((kz2, kz2), np.uint8)
-    ero = cv2.erode(img, k1)
-    dil = cv2.dilate(ero, k2)
-    wth = img - dil
-    thSeg = wth.mean() + ratio * wth.std()
-    segMap = (wth > thSeg).astype(np.uint8)
-    ret, labels, stats, cens = cv2.connectedComponentsWithStats(segMap)
-    maskarea = stats[:, -1] > thArea
-    coords = cens[maskarea][1:]
-    if flagRetMap:
-        return coords, segMap
-    else:
-        return coords
+from tool import load_img, show_img, draw3D, ax_imshow, get_fileList, get_roi, convert_16_to_RGB
+from extract import extract, extract_sep, extract_NTH, nms
+from register import TriAngleRectifyWithDelaunay, registerPoints
 
 
-def nms(img, coords, r):
-    mask = np.zeros_like(img)
-    coords_nms = []
-    coords_int = np.array(coords+0.5, dtype=np.int32)
-    for (x,y) in coords_int:
-        mask[y, x] = img[y, x]
-    for i, (x,y) in enumerate(coords):
-        roi = get_roi(mask, x, y, r)
-        gray = img[int(y+0.5), int(x+0.5)]
-        if gray == roi.max():
-            coords_nms.append([x, y])
-    return np.array(coords_nms)
+class PT(object):
+    def __init__(self, idx, x, y, vx, vy, status, conf, x0=-1, y0=-1):
+        self.idx    = idx
+        self.x      = x
+        self.y      = y
+        self.x0     = x if x0 == -1 else x0
+        self.y0     = y if y0 == -1 else y0
+        self.vx     = vx
+        self.vy     = vy
+        self.status = status
+        self.conf   = conf
 
 
-def deleteStars(points, img, imgRectify,  H, FP1, FP2):
-    susPt = []
-    tmap = np.zeros_like(img)
-    tid=1
-    height, width = img.shape[:2]
-    for i in range(np.shape(points)[0]):
-        x = round(points[i][0])
-        y = round(points[i][1])
-        scale = 2  # 恒星核大小
-        scale1 = 5  # 噪声核大小
-        sca_max = max(scale,scale1)+6
-        H_x = H[0,2]
-        H_y = H[1,2]
-        if H_x < 0:
-            H_x-=5
+class Track(object):
+    def __init__(self, pt1, pt2):
+        self.len = 2
+        self.idx0 = pt1.idx
+        self.cur_idx = pt2.idx
+        self.register_idx = pt2.idx
+        self.cur_pt = pt2
+        self.traj = [pt1, pt2]
+        self.update_speed()
+        self.conf = pt2.conf
+
+    def append(self, pt: PT):
+        self.traj.append(pt)
+        # update
+        self.cur_idx = pt.idx
+        self.register_idx = pt.idx
+        self.len += 1
+        self.cur_pt = pt
+        self.update_speed()
+        self.update_conf()
+
+    def get(self, key=None, idx=None):
+        oup = np.array([getattr(x, key) for x in self.traj])
+        if idx is None:
+            return oup
         else:
-            H_x+=5
-        if H_y < 0:
-            H_y-=5
+            return oup[idx]
+
+    def update(self, H):
+        for i, pt in enumerate(self.traj):
+            (xr, yr) = registerPoints((pt.x, pt.y), H)
+            pt.x, pt.y = xr, yr
+    
+    def update_speed(self, ):
+        vxs = self.get('vx')
+        vys = self.get('vy')
+        self.vx = np.mean(vxs)
+        self.vy = np.mean(vys)
+    
+    def update_conf(self, ):
+        confs = self.get('status')
+        self.conf = sum(confs)
+
+    def show(self, fig=None):
+        if fig is None:
+            plt.figure()
+        xs, ys = self.get('x'), self.get('y')
+        lab = f'{self.idx0} - {self.cur_idx}'
+        plt.plot(xs, ys, ms=2, label=lab, marker='o', linestyle='-')
+
+
+class DBT(object):
+    def __init__(self, config):
+        self.path_task_dir = config['path']
+        self.task = config['task']
+        self.scale = config['params_pre']['scale']
+        self.params_ext = config['params_ext']
+        self.params_reg = config['params_reg']
+        self.params_nontar = config['params_nontar']
+        self.params_track = config['params_track']
+        self.params_display = config['params_display']
+        self.Hs, self.sus, self.tracks = [], [], []
+        self.get_list_imgs(config['path'], config['postfix'])
+
+
+    def get_list_imgs(self, path, postfix='.fits'):
+        """Get all the image paths in the directory or the list of images"""
+        self.postfix = postfix
+        if isinstance(path, str):
+            self.path_task_dir = path
+            self.list_imgs = [os.path.join(self.path_task_dir, i) 
+                              for i in os.listdir(self.path_task_dir) 
+                              if i.endswith(postfix) and self.task in i]
+        elif isinstance(path, list):
+            self.path_task_dir = os.path.dirname(path[0])
+            self.list_imgs = path
+        if self.list_imgs == []:
+            raise KeyError('No images found in the directory!!!')
+
+
+    def imread(self, path_img):
+        """Read the image and return the image data and header"""
+        if path_img.endswith('.fits') or path_img.endswith('.fit'):
+            raw_picture=fits.open(path_img, ignore_missing_simple=True)   
+            header = raw_picture[0].header             
+            img = raw_picture[0].data
+            return np.ascontiguousarray(img, np.float32), header
+        elif path_img.endswith('.tif'):
+            img = cv2.imread(path_img, cv2.IMREAD_UNCHANGED), None
+        else:   
+            raise KeyError('wrong image format!!!')
+
+
+    def preprocess(self, img):
+        """Preprocess the image, including median filter and background subtraction"""
+        img = cv2.medianBlur(img, 3)
+        bkg = sep.Background(img)
+        fore = img - np.array(bkg)
+        h, w = img.shape
+        nh, nw = int(h*self.scale), int(w*self.scale)
+        self.h, self.w = nh, nw
+        oup = cv2.resize(fore, (nw,nh))
+        return oup
+    
+
+    def extract(self, img):
+        """Extract the sources from the single image"""
+        method = self.params_ext['method']
+        if method == 'nth':
+            coords = extract_NTH(img, self.params_ext['kernel_size'], self.params_ext['threshold'])
+        elif method == 'sep':
+            coords = extract_sep(img, self.params_ext['threshold'], self.params_ext['deblend'])
         else:
-            H_y+=5
-        if imgRectify[y, x]  == 0:
-            continue
-        if x<0+H_x or x>width-1+H_x or y<0+H_y or y>width-1+H_y:
-            continue
-        if x < sca_max or x > width - sca_max - 1 or y < sca_max or y > height - sca_max - 1:
-            continue
-        
-        roiDst = img[y-scale:y+scale+1, x-scale:x+scale+1].copy()
-        gaussianKernel = cv2.getGaussianKernel(2*scale+1, 1) * cv2.getGaussianKernel(2*scale+1,1).T
-        responseDst = cv2.filter2D(roiDst.astype('float32'), -1, gaussianKernel.astype('float32'))
-        res = responseDst[scale,scale]
-        roiRef = imgRectify[y-scale:y+scale+1, x-scale:x+scale+1].copy()
-        responseDiff = cv2.filter2D(roiRef.astype('float32'), -1, gaussianKernel.astype('float32'))
-        temp = responseDiff[scale,scale]
-        resDiff = abs(res - temp)/max(res,temp)  # 分布差异
-        SE = 1 - resDiff  # 响应相似度
+            raise KeyError('wrong extraction function!!!')
+        return coords
+    
 
-        roiDst = img[y-scale1:y+scale1+1, x-scale1:x+scale1+1].copy()
-        roiRef = imgRectify[y-scale1:y+scale1+1, x-scale1:x+scale1+1].copy()
-        img_difference_roi = roiDst - roiRef
-        gaussianKernel_3 = cv2.getGaussianKernel(2*scale1+1, 1) * cv2.getGaussianKernel(2*scale1+1,1).T            
+    def register_img(self, img1, img2, flag_img=False):
+        """Register the two images and return the homography matrix"""
+        num_register_stars = self.params_reg['num_stars']
+        ratio = self.params_reg['length_threshold']
+        ta1 = TriAngleRectifyWithDelaunay(img1, numStars=num_register_stars, ratio=ratio)
+        ta2 = TriAngleRectifyWithDelaunay(img2, numStars=num_register_stars, ratio=ratio)
+        H12, _ = ta1.getH(ta2)
+        self.Hs.append(H12)
+        if flag_img:
+            img12 = cv2.warpPerspective(img1, H12, img1.shape[::-1])
+            return H12, img12
+        else: return H12
+    
+
+    def register_tracks(self, H):
+        """Register the tracks with the homography matrix"""
+        for track in self.tracks:
+            track.update(H)
+        for i, sus in enumerate(self.sus):
+            self.sus[i] = registerPoints(sus, H)
+
+    
+    def cal_angle(self, vec1, vec2):
+        """Calculate the intersection angle between two tracks"""
+        u = np.array(vec1)
+        v = np.array(vec2)
+        dot_product = np.dot(u, v)
+        norm_u = np.linalg.norm(u)
+        norm_v = np.linalg.norm(v)
+        cos_theta = dot_product / (norm_u * norm_v)
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)
+        theta = np.arccos(cos_theta)
+        theta = np.degrees(theta)
+        return theta
+
+    
+    def filter_non_targets(self, pts1, pts2, H12):
+        """Filter the non-targets in the current frame based on the last frame"""
+        th_dis = self.params_nontar['distance_threshold']
+        pts12 = registerPoints(pts1, H12)
+        marks = np.zeros(pts2.shape[0])
+        for i, pt in enumerate(pts2):
+            dis = np.linalg.norm(pts12 - pt, ord=2, axis=1)
+            if (dis < th_dis).sum(): marks[i] = 1
+        pts_cur = pts2[marks==0]
+        map_sus = np.zeros((self.h, self.w))
+        for i, pt_cur in enumerate(pts_cur):
+            x, y = int(pt_cur[0]+0.5), int(pt_cur[1]+0.5)
+            map_sus[y, x] = i+1
+        return pts_cur, map_sus    
+    
+
+    def get_intertime(self, header1, header2):
+        """Get the interframe interval from the header"""
+        if header1 is None or header2 is None:
+            return 1
+        t1 = header1['DATE-OBS']
+        exp1 = header1['EXPTIME']
+        obj1 = datetime.fromisoformat(t1)
+        t2 = header2['DATE-OBS']
+        exp2 = header2['EXPTIME']
+        obj2 = datetime.fromisoformat(t2)
+        diff_obj = obj2 - obj1
+        delta_t = diff_obj.total_seconds() + (exp2-exp1)/2
+        return delta_t
+    
+
+    def associate_tracks(self, idx, map_sus, pts_cur, delta_t):
+        """Associate all the suspected points in the current frame to the history tracks"""
+        r_search = self.params_track['association_radius']
+        th_ang = self.params_track['angle_threshold']
+        for i, track in enumerate(self.tracks):
+            # filter false tracks
+            pt_last = track.cur_pt
+            if (pt_last.conf<0): continue
+            # track predict
+            xf, yf = pt_last.x+track.vx*delta_t, pt_last.y+track.vy*delta_t
+            map_roi = get_roi(map_sus, xf, yf, r_search, False, flatCopy=False)
+            if map_roi.sum() > 0:  
+                ys_roi, xs_roi = np.where(map_roi)
+                ys, xs = ys_roi+yf-r_search, xs_roi+xf-r_search
+                pos = np.argmin((xs-xf)**2+(ys-yf)**2)
+                tar_idx = int(map_roi[ys_roi[pos], xs_roi[pos]])
+                x_pred, y_pred = pts_cur[tar_idx-1]
+                vx, vy = (x_pred-pt_last.x)/delta_t, (y_pred-pt_last.y)/delta_t
+                conf = pt_last.conf+1
+                ang = abs(self.cal_angle((vx, vy), (track.vx, track.vy)))
+                if ang < th_ang:
+                    map_roi[ys_roi[pos], xs_roi[pos]] = 0
+                    pt_new = PT(idx, x_pred, y_pred, vx, vy, 1, conf)
+                    track.append(pt_new)
+            else:
+                pt_new = PT(idx, xf, yf, pt_last.vx, pt_last.vy, 0, pt_last.conf-1)
+                track.append(pt_new)
 
 
-        if SE < FP1: #0.4 and res>100
-            distribution_val_diff = cv2.matchTemplate(img_difference_roi.astype('float32'), gaussianKernel_3.astype('float32'), cv2.TM_CCOEFF_NORMED)
-            res= distribution_val_diff[0,0]
-            ret = cv2.filter2D(img_difference_roi.astype('float32'), -1, gaussianKernel.astype('float32'))
-            ret =ret[scale1,scale1]
-            if  res > FP2:    # and DS > 0.7distribution_val0 < 0.4 and and gradDst[1,1] < 0    ret> T_res*rms[y,x] and
-                susPt.append([points[i][0], points[i][1], 0])
-                tmap[y,x]=tid
-                tid = tid+1
-    susPt = np.array(susPt)
-    return susPt, tmap
+    def initialize_tracks(self, idx, map_sus, pts_last, pts_cur, H12, delta_t):
+        """Initialize the new tracks based on the suspected points in the current frame and last frame"""
+        r_border = self.params_track['r_boundary']
+        r_associate = self.params_track['search_radius']
+        pts_base = pts_last.copy()
+        pts_last = registerPoints(pts_last, H12)
+        for i, pt_last in enumerate(pts_last):
+            (x_last, y_last) = pt_last
+            if (x_last<r_border) or (y_last<r_border) or \
+                (x_last>self.w-r_border) or (y_last>self.h-r_border): continue
+            roi_sus = get_roi(map_sus, x_last, y_last, r_associate, False, flatCopy=False)
+            # search neighbor points
+            if roi_sus.sum() == 0: continue
+            ys, xs = np.where(roi_sus)
+            for j in range(xs.size):
+                tar_idx = int(roi_sus[ys[j], xs[j]])
+                x, y = pts_cur[tar_idx-1]
+                vx, vy = (x-x_last)/delta_t, (y-y_last)/delta_t
+                x0, y0 = pts_base[i][0], pts_base[i][1]
+                pt0 = PT(idx-1, x_last, y_last, vx, vy, 1, 1, x0, y0)
+                pt1 = PT(idx, x, y, vx, vy, 1, 2)
+                track = Track(pt0, pt1)
+                self.tracks.append(track)
+
+
+    def main(self):
+        """Main function to process the image sequence"""
+        # last frame & source extraction
+        raw1, header1 = self.imread(self.list_imgs[0])
+        img1 = self.preprocess(raw1)
+        pts_last = self.extract(img1)
+        for idx in tqdm(range(len(self.list_imgs)-1), desc=self.task):
+            # current frame & source extraction
+            raw2, header2 = self.imread(self.list_imgs[idx+1])
+            img2 = self.preprocess(raw2)
+            
+            # image registration
+            H12, img12 = self.register_img(img1, img2, flag_img=True)
+
+            # tracks registration
+            self.register_tracks(H12)
+
+            # source extraction
+            pts1 = self.extract(img1)
+            pts2 = self.extract(img2)
+
+            # filter non-targets
+            pts_cur, map_sus = self.filter_non_targets(pts1, pts2, H12)
+
+            if idx > 0: 
+                # get interframe interval
+                delta_t = self.get_intertime(header1, header2)
+
+                # track association
+                self.associate_tracks(idx, map_sus, pts_cur, delta_t)
+
+                # track initilization
+                self.initialize_tracks(idx, map_sus, pts_last, pts_cur, H12, delta_t)
+                
+            # upadte
+            img1, header1 = img2, header2
+            self.sus.append(pts_last)
+            pts_last = pts_cur
+
+        # track filter
+        self.find_true_tracks()
+
+        # print & show
+        self.print_tracks(self.tracks_true)
+        # plt.ion()
+        fig, _ = show_img(img2)
+        self.show_tracks(self.tracks_true, fig)
+        plt.show()
+        plt.close('all')
+
+        # save
+        self.save_tracks(self.tracks_true)
+        self.save_tracks_txt(self.tracks_true)
+
+
+    def find_true_tracks(self,):
+        """Filter falae tracks with conditions"""
+        th_len = self.params_track['length_threshold']
+        th_conf = self.params_track['confidence_threshold']
+        tracks_true = []
+        for track_id in range(len(self.tracks)):
+            track = self.tracks[track_id]
+            flag_len = track.len > th_len
+            flag_conf = track.conf > th_conf
+            flag = flag_len & flag_conf
+            if flag: 
+                tracks_true.append(track)
+        self.tracks_true = tracks_true
+        print(f'{self.task}: Found {len(tracks_true)} true tracks!!!')
+
+
+    def show_tracks(self, tracks: list[Track], fig=None):
+        """Show and save the given tracks in the image"""
+        # plt.ion()
+        if fig is None:
+            fig, axes = plt.subplots(1,1,figsize=(16,8))
+        for track in tracks:
+            track.show(fig)
+        if len(tracks)<10: plt.legend()
+        plt.xlim(0, self.w)
+        plt.ylim(self.h, 0)
+        plt.tight_layout()
+        plt.savefig(f'results/{self.task}_tracks.png', dpi=500)
+        print(f'All the tracks are drawn in results/{self.task}_tracks.png')
+
+
+    def print_tracks(self, tracks: list[Track]):
+        """Print the information of the given tracks"""
+        print(f"{self.task} tracks info: ")
+        for i, track in enumerate(tracks):
+            con = f'\ntrack-{i}:\n'
+            for pt in track.traj:
+                con += f'\tframe-{pt.idx:02d}  status:{pt.status}  conf:{pt.conf:02d}  pt:({pt.x:6.2f},{pt.y:6.2f})  '
+                con += f'pt0:({pt.x0:6.2f},{pt.y0:6.2f})  v:({pt.vx:5.2f}, {pt.vy:5.2f})\n'
+            print(con)
+            
+    
+    def show_sus(self, ):
+        """Show the suspected points in the image, only for debug"""
+        plt.figure()
+        for sus in self.sus:
+            plt.plot(sus[:, 0], sus[:, 1], marker='o', ms=3, linestyle='none')
+    
+
+    def save_tracks(self, tracks:list[Track]):
+        """Save the detection results in each frame and save images"""
+        dir_save = os.path.join(self.path_task_dir, 'results', self.task)
+        if not os.path.exists(dir_save): os.makedirs(dir_save)
+        for idx, path_img in enumerate(self.list_imgs[1:]):
+            img = self.preprocess(self.imread(path_img)[0])
+            img_rgb = convert_16_to_RGB(img)
+            for track in tracks:
+                for pt in track.traj:
+                    if pt.idx == idx:
+                        cv2.circle(img_rgb, (int(pt.x0), int(pt.y0)), 10, (0,0,255), 2)
+            name_img = os.path.basename(path_img).replace(self.postfix, 'tif')
+            path_save = os.path.join(dir_save, name_img)
+            cv2.imwrite(path_save, img_rgb)
+        print('Detection result in each frame are drawn and saved in ', dir_save)
+
+
+    def save_tracks_txt(self, tracks:list[Track]):
+        """Save the detection results in a csv file"""
+        dir_save = os.path.join(self.path_task_dir, 'results', self.task)
+        if not os.path.exists(dir_save): os.makedirs(dir_save)
+        path_save = os.path.join(dir_save, f'{self.task}_tracks.csv')
+        line = ''
+        for idx in range(len(self.list_imgs)):
+            line += f'{idx+1:04d}, {os.path.basename(self.list_imgs[idx])}, '
+            for track_id, track in enumerate(tracks):
+                for pt in track.traj:
+                    if pt.idx + 1 == idx:
+                        line += f'{track_id+1:02d}, {pt.x0:6.2f}, {pt.y0:6.2f}'
+            line += '\n'
+        with open(path_save, 'w') as f:
+            f.write('ID, IMG, TRACK_ID, x0, y0, TRACK_ID, x1, y1, ...\n')
+            f.write(line)
+        print('Detection results are exported in in ', path_save)   
 
 
 
-if __name__ == '__main__':
-    from tool import load_img, show_img, draw3D, get_roi
-    import matplotlib.pyplot as plt
-    img = load_img('./imgs/test/SKYMAPPER0015-CAM1-20221130001035774.fits')
-    h, w = img.shape
-    nh, nw = int(h*0.1), int(w*0.1)
-    sub = cv2.resize(img, (nw, nh))
-    _, coords = extract_sep(img)
-    show_img(img)
-    plt.plot(coords[:, 0], coords[:, 1], 'ro', ms=1)
-    draw3D(get_roi(img, 6047, 833, 80))
-    plt.show()
+

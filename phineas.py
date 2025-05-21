@@ -7,7 +7,7 @@ from tqdm import tqdm
 from scipy import stats
 
 from tool import load_img, show_img, draw3D, ax_imshow, get_fileList, get_roi, convert_16_to_RGB
-from detect import extract, extract_sep, extract_NTH, nms
+from extract import extract, extract_sep, extract_NTH, nms
 from register import TriAngleRectifyWithDelaunay, registerPoints
 
 

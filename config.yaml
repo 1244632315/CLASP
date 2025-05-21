@@ -1,0 +1,58 @@
+# task_name, included in the image name
+task: PORTABLE
+
+# image paths or image directory path
+path: ./imgs/Phineas_2
+postfix: fits
+
+# parameters of image preprocessing
+params_pre:
+  # scale the image to x% of the original size
+  scale: 0.2
+
+# parameters of source extraction
+params_ext:
+  # extraction algorithm, support 'sep' and 'nth' now
+  method: sep
+  # the threshold of image segmentation
+  threshold: 5
+  # ratio of deblending
+  deblend: 1.0
+  # kernel size of NTH algorithm
+  kernel_size: [5, 9]
+
+# parameters of image registration, only support triangle registration now
+params_reg:
+  # the number of extracted stars 
+  num_stars: 25
+  # the length threshold for triangle matching
+  length_threshold: 0.05
+
+# parameters of non-target filtering
+params_nontar:
+  # the distance threshold for non-target filtering
+  distance_threshold: 10
+
+# parameters of track association
+params_track:
+  # search radius for initial track search
+  search_radius: 60
+  # search radius for track association
+  association_radius: 20
+  # ignored regions of image boundary
+  r_boundary: 20
+  # vectorial angle threshold of two tracks
+  angle_threshold: 25
+  # track length threshold for true track filtering
+  length_threshold: 5
+  # track confidence threshold for true track filtering
+  confidence_threshold: 10
+
+# parameters for display & save
+params_display:
+  # whether to display the image
+  display: true
+  # whether to save the detected results in each image
+  save: true
+  # whether to export the detected results to a csv file
+  export: true

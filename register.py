@@ -4,7 +4,7 @@ import time
 import numpy as np
 import matplotlib.tri as tri
 import matplotlib.pyplot as plt
-from detect import extract_sep
+from extract import extract_sep
 
 """点单应变换"""
 def registerPoints(points, H12):
@@ -196,7 +196,7 @@ class TriAngleRectifyWithDelaunay:
 
 if __name__ == '__main__':
     from tool import load_img, show_img, draw3D, ax_imshow, get_fileList
-    from detect import extract, extract_sep, extract_NTH, nms
+    from extract import extract, extract_sep, extract_NTH, nms
     from tqdm import tqdm
     list_imgs = get_fileList('./imgs/20220607')
     sum = 0

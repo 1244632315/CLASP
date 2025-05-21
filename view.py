@@ -1,11 +1,12 @@
 import os
 import cv2
+import sep
 import astroalign as aa
 import numpy as np
 import matplotlib.pyplot as plt
 
 from tool import load_img, show_img, draw3D, ax_imshow, get_fileList, get_roi
-from detect import extract, extract_sep, extract_NTH, nms
+from extract import extract, extract_sep, extract_NTH, nms
 
 
 
