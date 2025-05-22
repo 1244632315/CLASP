@@ -1,38 +1,44 @@
 import os
 import yaml
+from pprint import pprint
 
 from detect import DBT
 from tool import get_fileList
 
-def process_CLASP_seqs(dir_path):
-    # classify the task data
-    paths = get_fileList(dir_path)
+
+def process_one_seq():
+    with open('config.yaml', 'r') as f:
+        config = yaml.safe_load(f)
+    dbt = DBT(config)
+    dbt.main()
+
+
+def process_CLASP_seqs():
+    dirpath = 'E:/CLASP/20220929'
+    print(f'\n\n\nCurrent dirpath: {dirpath}')
+    paths = get_fileList(dirpath, postfix='fits')
     tasks = {}
     for path in paths:
         name = os.path.basename(path)
         keys = name.split('-')
         sky, cam = keys[:2]
-        if sky not in tasks.keys():
-            tasks[sky] = []
-        tasks[sky].append(path)
+        key = sky + '-' + cam
+        if key not in tasks.keys():
+            tasks[key] = []
+        tasks[key].append(path)
     
-    # process each task independently
+    with open('config.yaml', 'r') as f:
+        config = yaml.safe_load(f)
+    
     for task, paths in tasks.items():
         print(f'\nStart to process task: {task}')
-        detector = DBT(paths, task=task, postfix='fits', scale=0.2, method='SEP')
+        config['task'] = task
+        config['path'] = paths
+        detector = DBT(config)
         detector.main()
 
-
-def proecess_one_seq():
-    task='SKYMAPPER0033'
-    imgs = [x for x in get_fileList('./imgs/20221025') if task in x]
-    detector = DBT(imgs, task=task, scale=0.2)
-    detector.main()
 
 
 
 if __name__ == '__main__':
-    with open('config.yaml', 'r') as f:
-        config = yaml.safe_load(f)
-    dbt = DBT(config)
-    dbt.main()
+    process_CLASP_seqs()

@@ -264,6 +264,22 @@ class DBT(object):
                 self.tracks.append(track)
 
 
+    def find_true_tracks(self,):
+        """Filter falae tracks with conditions"""
+        th_len = self.params_track['length_threshold']
+        th_conf = self.params_track['confidence_threshold']
+        tracks_true = []
+        for track_id in range(len(self.tracks)):
+            track = self.tracks[track_id]
+            flag_len = track.len > th_len
+            flag_conf = track.conf > th_conf
+            flag = flag_len & flag_conf
+            if flag: 
+                tracks_true.append(track)
+        self.tracks_true = tracks_true
+        print(f'{self.task}: Found {len(tracks_true)} true tracks!!!')
+
+
     def main(self):
         """Main function to process the image sequence"""
         # last frame & source extraction
@@ -307,33 +323,20 @@ class DBT(object):
         self.find_true_tracks()
 
         # print & show
-        self.print_tracks(self.tracks_true)
-        # plt.ion()
-        fig, _ = show_img(img2)
+        self.show_and_save(img2)
+
+
+    def show_and_save(self, img):
+        if self.params_display['print']:
+            self.print_tracks(self.tracks_true)
+        fig, _ = show_img(img)
         self.show_tracks(self.tracks_true, fig)
-        plt.show()
+        if self.params_display['display']:
+            plt.show()
         plt.close('all')
-
-        # save
-        self.save_tracks(self.tracks_true)
-        self.save_tracks_txt(self.tracks_true)
-
-
-    def find_true_tracks(self,):
-        """Filter falae tracks with conditions"""
-        th_len = self.params_track['length_threshold']
-        th_conf = self.params_track['confidence_threshold']
-        tracks_true = []
-        for track_id in range(len(self.tracks)):
-            track = self.tracks[track_id]
-            flag_len = track.len > th_len
-            flag_conf = track.conf > th_conf
-            flag = flag_len & flag_conf
-            if flag: 
-                tracks_true.append(track)
-        self.tracks_true = tracks_true
-        print(f'{self.task}: Found {len(tracks_true)} true tracks!!!')
-
+        if self.params_display['export']:
+            self.save_tracks(self.tracks_true)
+            self.save_tracks_txt(self.tracks_true)
 
     def show_tracks(self, tracks: list[Track], fig=None):
         """Show and save the given tracks in the image"""
@@ -346,8 +349,9 @@ class DBT(object):
         plt.xlim(0, self.w)
         plt.ylim(self.h, 0)
         plt.tight_layout()
-        plt.savefig(f'results/{self.task}_tracks.png', dpi=500)
-        print(f'All the tracks are drawn in results/{self.task}_tracks.png')
+        path = f'results/{os.path.basename(self.path_task_dir)}_{self.task}_tracks.png'
+        plt.savefig(path, dpi=500)
+        print(f'All the tracks are drawn in {path}!!!')
 
 
     def print_tracks(self, tracks: list[Track]):
@@ -372,7 +376,7 @@ class DBT(object):
         """Save the detection results in each frame and save images"""
         dir_save = os.path.join(self.path_task_dir, 'results', self.task)
         if not os.path.exists(dir_save): os.makedirs(dir_save)
-        for idx, path_img in enumerate(self.list_imgs[1:]):
+        for idx, path_img in enumerate(tqdm(self.list_imgs[1:], desc='Saving images')):
             img = self.preprocess(self.imread(path_img)[0])
             img_rgb = convert_16_to_RGB(img)
             for track in tracks:
@@ -393,10 +397,13 @@ class DBT(object):
         line = ''
         for idx in range(len(self.list_imgs)):
             line += f'{idx+1:04d}, {os.path.basename(self.list_imgs[idx])}, '
+            result = {track_id: ' , ' for track_id in range(len(tracks))}
             for track_id, track in enumerate(tracks):
                 for pt in track.traj:
                     if pt.idx + 1 == idx:
-                        line += f'{track_id+1:02d}, {pt.x0:6.2f}, {pt.y0:6.2f}'
+                        result[track_id] = f'{pt.x0:6.2f}, {pt.y0:6.2f}'
+            for track_id, pt in result.items(): 
+                line += f'{track_id+1:02d}, {pt}, '
             line += '\n'
         with open(path_save, 'w') as f:
             f.write('ID, IMG, TRACK_ID, x0, y0, TRACK_ID, x1, y1, ...\n')

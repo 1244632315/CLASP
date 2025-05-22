@@ -36,9 +36,9 @@ params_nontar:
 # parameters of track association
 params_track:
   # search radius for initial track search
-  search_radius: 60
+  search_radius: 30
   # search radius for track association
-  association_radius: 20
+  association_radius: 10
   # ignored regions of image boundary
   r_boundary: 20
   # vectorial angle threshold of two tracks
@@ -51,8 +51,10 @@ params_track:
 # parameters for display & save
 params_display:
   # whether to display the image
-  display: true
+  display: false
   # whether to save the detected results in each image
   save: true
   # whether to export the detected results to a csv file
   export: true
+  # whether to print the detected results
+  print: false
