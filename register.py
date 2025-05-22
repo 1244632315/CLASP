@@ -31,13 +31,14 @@ def registerPoints(points, H12):
 
 """Delaunay三角配准"""
 class TriAngleRectifyWithDelaunay:
-    def __init__(self, img, r=5, numStars=25, ratio=0.05, angleRatio=10) -> None:
+    def __init__(self, img, r=5, numStars=25, ratio=0.05, angleRatio=10, thLen=100) -> None:
         super().__init__()
         self.r = r                      # 质心定位的r
         self.numStars = numStars        # 提取星点数量
         self.lengthRatio = ratio        # 长度相对变换量
         self.angleRatio = angleRatio    # 角度相对变换量
         self.img = img
+        self.thLen = thLen
         # 星点提取->精定位->构建配准三角形
         self.withdrawStars(img)
         self.starsPrecision(img)
@@ -45,20 +46,6 @@ class TriAngleRectifyWithDelaunay:
     
     # 输入图像，返回面积前x%大的连通域中心坐标，用于检测星点
     def withdrawStars(self, img):
-        # u, v = img.mean(), img.std()
-        # th = (u+1.5*v)
-        # while 1:
-        #     imgBi = (img > th).astype(np.uint8)
-        #     imgBi = cv2.dilate(imgBi, np.ones((5,5), np.uint8))
-        #     imgBi[:self.r, :] = 0
-        #     imgBi[-self.r:, :] = 0
-        #     imgBi[:, :self.r] = 0
-        #     imgBi[:, -self.r:] = 0
-        #     ret, labels, stats, centroids = cv2.connectedComponentsWithStats(np.asarray(imgBi, np.uint8))
-        #     if ret >= self.numStars:
-        #         break
-        #     else:
-        #         th -= 0.1*v
         bkg = sep.Background(img, bw=32, bh=32, fw=3, fh=3)
         objects, imgBi = sep.extract(img, 3, err=bkg.globalrms, filter_type='conv', deblend_cont=1, segmentation_map=True)
         ret, labels, stats, centroids = cv2.connectedComponentsWithStats(np.asarray(imgBi>0, np.uint8))
@@ -162,7 +149,7 @@ class TriAngleRectifyWithDelaunay:
         p2 = pointsRectify[:,2:]
 
         # 初筛一下
-        filter = abs(p1-p2).sum(axis=1)<1000  # 帧间偏移过大时对应调整
+        filter = abs(p1-p2).sum(axis=1)<self.thLen  # 帧间偏移过大时对应调整
         p1 = p1[filter]
         p2 = p2[filter]
 

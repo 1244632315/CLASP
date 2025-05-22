@@ -81,6 +81,7 @@ class DBT(object):
     def __init__(self, config):
         self.path_task_dir = config['path']
         self.task = config['task']
+        self.num_imgs = config['num_imgs']
         self.scale = config['params_pre']['scale']
         self.params_ext = config['params_ext']
         self.params_reg = config['params_reg']
@@ -96,13 +97,16 @@ class DBT(object):
         self.postfix = postfix
         if isinstance(path, str):
             self.path_task_dir = path
-            self.list_imgs = [os.path.join(self.path_task_dir, i) 
+            list_imgs = [os.path.join(self.path_task_dir, i) 
                               for i in os.listdir(self.path_task_dir) 
                               if i.endswith(postfix) and self.task in i]
         elif isinstance(path, list):
             self.path_task_dir = os.path.dirname(path[0])
-            self.list_imgs = path
-        if self.list_imgs == []:
+            list_imgs = path
+        if self.num_imgs is not None:
+            list_imgs = list_imgs[:self.num_imgs]
+        self.list_imgs = sorted(list_imgs)  
+        if list_imgs == []:
             raise KeyError('No images found in the directory!!!')
 
 
@@ -140,15 +144,21 @@ class DBT(object):
             coords = extract_sep(img, self.params_ext['threshold'], self.params_ext['deblend'])
         else:
             raise KeyError('wrong extraction function!!!')
+        h, w = img.shape
+        border = self.params_ext['boundary']
+        for coord in coords:
+            if coord[0] < border or coord[0] > (w-border) or coord[1] < border or coord[1] > (h-border):
+                coords = np.delete(coords, np.where(coords==coord), axis=0)
         return coords
     
 
     def register_img(self, img1, img2, flag_img=False):
         """Register the two images and return the homography matrix"""
         num_register_stars = self.params_reg['num_stars']
-        ratio = self.params_reg['length_threshold']
-        ta1 = TriAngleRectifyWithDelaunay(img1, numStars=num_register_stars, ratio=ratio)
-        ta2 = TriAngleRectifyWithDelaunay(img2, numStars=num_register_stars, ratio=ratio)
+        ratio = self.params_reg['ratio_len']
+        th_len = self.params_reg['th_length']
+        ta1 = TriAngleRectifyWithDelaunay(img1, numStars=num_register_stars, ratio=ratio, thLen=th_len)
+        ta2 = TriAngleRectifyWithDelaunay(img2, numStars=num_register_stars, ratio=ratio, thLen=th_len)
         H12, _ = ta1.getH(ta2)
         self.Hs.append(H12)
         if flag_img:

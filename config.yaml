@@ -1,8 +1,9 @@
 # task_name, included in the image name
-task: PORTABLE
+task: SKYMAPPER0037-CAM2
 
 # image paths or image directory path
-path: ./imgs/Phineas_2
+path: E:/CLASP/20220929
+num_imgs: none
 postfix: fits
 
 # parameters of image preprocessing
@@ -20,13 +21,17 @@ params_ext:
   deblend: 1.0
   # kernel size of NTH algorithm
   kernel_size: [5, 9]
+  # ignored regions of image boundary
+  boundary: 10
 
 # parameters of image registration, only support triangle registration now
 params_reg:
   # the number of extracted stars 
   num_stars: 25
   # the length threshold for triangle matching
-  length_threshold: 0.05
+  ratio_len: 0.08
+  # the length threshold for incorrect triangle transormation
+  th_length: 100
 
 # parameters of non-target filtering
 params_nontar:
@@ -35,10 +40,10 @@ params_nontar:
 
 # parameters of track association
 params_track:
-  # search radius for initial track search
-  search_radius: 30
-  # search radius for track association
-  association_radius: 10
+  # search radius for initial track search  30
+  search_radius: 50
+  # search radius for track association     10
+  association_radius: 15
   # ignored regions of image boundary
   r_boundary: 20
   # vectorial angle threshold of two tracks

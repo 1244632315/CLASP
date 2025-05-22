@@ -14,31 +14,37 @@ def process_one_seq():
 
 
 def process_CLASP_seqs():
-    dirpath = 'E:/CLASP/20220929'
-    print(f'\n\n\nCurrent dirpath: {dirpath}')
-    paths = get_fileList(dirpath, postfix='fits')
-    tasks = {}
-    for path in paths:
-        name = os.path.basename(path)
-        keys = name.split('-')
-        sky, cam = keys[:2]
-        key = sky + '-' + cam
-        if key not in tasks.keys():
-            tasks[key] = []
-        tasks[key].append(path)
+    dirs = get_fileList('E:/CLASP', postfix='')
+    dirs = sorted(dirs)
+    for dirpath in dirs[2:]:
+        print(f'\n\n\nCurrent dirpath: {dirpath}')
+        paths = get_fileList(dirpath, postfix='fits')
+        tasks = {}
+        for path in paths:
+            name = os.path.basename(path)
+            keys = name.split('-')
+            sky, cam = keys[:2]
+            key = sky + '-' + cam
+            if key not in tasks.keys():
+                tasks[key] = []
+            tasks[key].append(path)
     
-    with open('config.yaml', 'r') as f:
-        config = yaml.safe_load(f)
-    
-    for task, paths in tasks.items():
-        print(f'\nStart to process task: {task}')
-        config['task'] = task
-        config['path'] = paths
-        detector = DBT(config)
-        detector.main()
+        with open('config.yaml', 'r') as f:
+            config = yaml.safe_load(f)
+        
+        for task, paths in tasks.items():
+            print(f'\nStart to process task: {task}')
+            config['task'] = task
+            config['path'] = paths
+            detector = DBT(config)
+            try:
+                detector.main()
+            except:
+                print(f'Error in task: {task}')
+                continue
 
 
 
 
 if __name__ == '__main__':
-    process_CLASP_seqs()
+    process_one_seq()
