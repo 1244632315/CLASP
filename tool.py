@@ -337,5 +337,7 @@ def get_roi(img, x, y, r, flagPadding=False, flatCopy=True):
     return roi
 
 
+
+
 if __name__ == '__main__':
     decodeImgDir('./imgs/Phineas_1', 'fits', scale=0.5, ratioTrunc=2)

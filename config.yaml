@@ -1,10 +1,12 @@
 # task_name, included in the image name
-task: SKYMAPPER0037-CAM2
+task: SKYMAPPER0048-CAM1
 
 # image paths or image directory path
 path: E:/CLASP/20220929
-num_imgs: none
 postfix: fits
+
+# number of loaded images: num(int), [start, end](list), 'all'(str)
+num_imgs: all
 
 # parameters of image preprocessing
 params_pre:
@@ -16,13 +18,13 @@ params_ext:
   # extraction algorithm, support 'sep' and 'nth' now
   method: sep
   # the threshold of image segmentation
-  threshold: 5
+  threshold: 3
   # ratio of deblending
   deblend: 1.0
   # kernel size of NTH algorithm
   kernel_size: [5, 9]
   # ignored regions of image boundary
-  boundary: 10
+  boundary: 3
 
 # parameters of image registration, only support triangle registration now
 params_reg:
@@ -40,18 +42,18 @@ params_nontar:
 
 # parameters of track association
 params_track:
-  # search radius for initial track search  30
+  # search radius for initial track search  50
   search_radius: 50
-  # search radius for track association     10
+  # search radius for track association     15
   association_radius: 15
   # ignored regions of image boundary
-  r_boundary: 20
+  r_boundary: 10
   # vectorial angle threshold of two tracks
   angle_threshold: 25
   # track length threshold for true track filtering
-  length_threshold: 5
+  length_threshold: 10
   # track confidence threshold for true track filtering
-  confidence_threshold: 10
+  confidence_threshold: 0.7
 
 # parameters for display & save
 params_display:
@@ -62,4 +64,4 @@ params_display:
   # whether to export the detected results to a csv file
   export: true
   # whether to print the detected results
-  print: false
+  print: true

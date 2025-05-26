@@ -7,10 +7,12 @@ from tqdm import tqdm
 from scipy import stats
 from astropy.io import fits
 from datetime import datetime
+import imageio.v2 as imageio
 
 from tool import load_img, show_img, draw3D, ax_imshow, get_fileList, get_roi, convert_16_to_RGB
 from extract import extract, extract_sep, extract_NTH, nms
 from register import TriAngleRectifyWithDelaunay, registerPoints
+from kalman import kalman_smooth
 
 
 class PT(object):
@@ -27,7 +29,7 @@ class PT(object):
 
 
 class Track(object):
-    def __init__(self, pt1, pt2):
+    def __init__(self, pt1, pt2, H0):
         self.len = 2
         self.idx0 = pt1.idx
         self.cur_idx = pt2.idx
@@ -35,7 +37,8 @@ class Track(object):
         self.cur_pt = pt2
         self.traj = [pt1, pt2]
         self.update_speed()
-        self.conf = pt2.conf
+        self.conf = 1
+        self.Hs = [H0]
 
     def append(self, pt: PT):
         self.traj.append(pt)
@@ -54,10 +57,13 @@ class Track(object):
         else:
             return oup[idx]
 
-    def update(self, H):
+    def update(self, H12):
         for i, pt in enumerate(self.traj):
-            (xr, yr) = registerPoints((pt.x, pt.y), H)
+            (xr, yr) = registerPoints((pt.x, pt.y), H12)
             pt.x, pt.y = xr, yr
+        for i, Hi in enumerate(self.Hs):
+            self.Hs[i] = np.dot(H12, Hi)
+        self.Hs.append(H12)
     
     def update_speed(self, ):
         vxs = self.get('vx')
@@ -67,14 +73,45 @@ class Track(object):
     
     def update_conf(self, ):
         confs = self.get('status')
-        self.conf = sum(confs)
-
+        self.conf = sum(confs) / self.len
+    
+    def print(self, ):
+        con = ''
+        for pt in self.traj:
+            con += f'\tframe-{pt.idx:02d}  status:{pt.status}  conf:{pt.conf*100:02f}%  pt:({pt.x:6.2f},{pt.y:6.2f})  '
+            con += f'pt0:({pt.x0:6.2f},{pt.y0:6.2f})  v:({pt.vx:5.2f}, {pt.vy:5.2f})\n'
+        print(con)
+    
     def show(self, fig=None):
         if fig is None:
             plt.figure()
         xs, ys = self.get('x'), self.get('y')
         lab = f'{self.idx0} - {self.cur_idx}'
         plt.plot(xs, ys, ms=2, label=lab, marker='o', linestyle='-')
+
+    def remove_invalid_points(self, ):
+        # delete final invalid predictions
+        for i, pt in enumerate(self.traj[::-1]):
+            if pt.status == 0:
+                self.traj.pop()
+            else:
+                break
+        self.update_speed()
+        self.len = len(self.traj)
+
+    def interpolate(self, ):
+        xs, ys, status = self.get('x'), self.get('y'), self.get('status')
+        data = np.stack([status, xs, ys]).reshape(3, self.len).T
+        new_data = kalman_smooth(data)
+        new_traj = []
+        # interpolate leak detections
+        for i, pt in enumerate(self.traj[:-1]):
+            if pt.status == 0:
+                pt.x, pt.y = new_data[i, 1], new_data[i, 2]
+                pt.x0, pt.y0 = registerPoints((pt.x, pt.y), np.linalg.inv(self.Hs[i]))
+            new_traj.append(pt)
+        new_traj.append(self.traj[-1])
+        self.traj = new_traj
 
 
 class DBT(object):
@@ -103,8 +140,14 @@ class DBT(object):
         elif isinstance(path, list):
             self.path_task_dir = os.path.dirname(path[0])
             list_imgs = path
-        if self.num_imgs is not None:
+        if self.num_imgs == 'all':
+            pass
+        elif  isinstance(self.num_imgs, int):
             list_imgs = list_imgs[:self.num_imgs]
+        elif isinstance(self.num_imgs, list):
+            list_imgs = list_imgs[self.num_imgs[0]:self.num_imgs[1]]
+        else:
+            raise KeyError('num_imgs should be int or "all"!!!')
         self.list_imgs = sorted(list_imgs)  
         if list_imgs == []:
             raise KeyError('No images found in the directory!!!')
@@ -167,12 +210,12 @@ class DBT(object):
         else: return H12
     
 
-    def register_tracks(self, H):
-        """Register the tracks with the homography matrix"""
+    def register_tracks(self, H12):
+        """Register the tracks from the last axis to the current axis with the homography matrix"""
         for track in self.tracks:
-            track.update(H)
+            track.update(H12)
         for i, sus in enumerate(self.sus):
-            self.sus[i] = registerPoints(sus, H)
+            self.sus[i] = registerPoints(sus, H12)
 
     
     def cal_angle(self, vec1, vec2):
@@ -223,13 +266,18 @@ class DBT(object):
     def associate_tracks(self, idx, map_sus, pts_cur, delta_t):
         """Associate all the suspected points in the current frame to the history tracks"""
         r_search = self.params_track['association_radius']
+        r_border = self.params_track['r_boundary']
         th_ang = self.params_track['angle_threshold']
         for i, track in enumerate(self.tracks):
             # filter false tracks
             pt_last = track.cur_pt
             if (pt_last.conf<0): continue
+            if (track.cur_idx+1 != idx): continue
             # track predict
             xf, yf = pt_last.x+track.vx*delta_t, pt_last.y+track.vy*delta_t
+            # stop to predict track over boundary
+            if (xf<r_border) or (xf>self.w-r_border) or (yf<r_border) or (yf>self.h-r_border):
+                continue
             map_roi = get_roi(map_sus, xf, yf, r_search, False, flatCopy=False)
             if map_roi.sum() > 0:  
                 ys_roi, xs_roi = np.where(map_roi)
@@ -239,14 +287,14 @@ class DBT(object):
                 x_pred, y_pred = pts_cur[tar_idx-1]
                 vx, vy = (x_pred-pt_last.x)/delta_t, (y_pred-pt_last.y)/delta_t
                 conf = pt_last.conf+1
-                ang = abs(self.cal_angle((vx, vy), (track.vx, track.vy)))
+                ang = self.cal_angle((vx, vy), (track.vx, track.vy))
                 if ang < th_ang:
                     map_roi[ys_roi[pos], xs_roi[pos]] = 0
                     pt_new = PT(idx, x_pred, y_pred, vx, vy, 1, conf)
                     track.append(pt_new)
-            else:
-                pt_new = PT(idx, xf, yf, pt_last.vx, pt_last.vy, 0, pt_last.conf-1)
-                track.append(pt_new)
+                    continue
+            pt_new = PT(idx, xf, yf, pt_last.vx, pt_last.vy, 0, pt_last.conf-1)
+            track.append(pt_new)
 
 
     def initialize_tracks(self, idx, map_sus, pts_last, pts_cur, H12, delta_t):
@@ -270,7 +318,7 @@ class DBT(object):
                 x0, y0 = pts_base[i][0], pts_base[i][1]
                 pt0 = PT(idx-1, x_last, y_last, vx, vy, 1, 1, x0, y0)
                 pt1 = PT(idx, x, y, vx, vy, 1, 2)
-                track = Track(pt0, pt1)
+                track = Track(pt0, pt1, H12)
                 self.tracks.append(track)
 
 
@@ -288,6 +336,13 @@ class DBT(object):
                 tracks_true.append(track)
         self.tracks_true = tracks_true
         print(f'{self.task}: Found {len(tracks_true)} true tracks!!!')
+
+
+    def track_postprocess(self,):
+        """Postprocess tracks including leak point interpolation and delete wrong points"""
+        for track in self.tracks_true:
+            track.remove_invalid_points()
+            track.interpolate()
 
 
     def main(self):
@@ -332,6 +387,9 @@ class DBT(object):
         # track filter
         self.find_true_tracks()
 
+        # track postprocess
+        self.track_postprocess()
+
         # print & show
         self.show_and_save(img2)
 
@@ -358,7 +416,7 @@ class DBT(object):
         if len(tracks)<10: plt.legend()
         plt.xlim(0, self.w)
         plt.ylim(self.h, 0)
-        plt.tight_layout()
+        if len(tracks): plt.tight_layout()
         path = f'results/{os.path.basename(self.path_task_dir)}_{self.task}_tracks.png'
         plt.savefig(path, dpi=500)
         print(f'All the tracks are drawn in {path}!!!')
@@ -386,17 +444,30 @@ class DBT(object):
         """Save the detection results in each frame and save images"""
         dir_save = os.path.join(self.path_task_dir, 'results', self.task)
         if not os.path.exists(dir_save): os.makedirs(dir_save)
+        samples = {}
         for idx, path_img in enumerate(tqdm(self.list_imgs[1:], desc='Saving images')):
             img = self.preprocess(self.imread(path_img)[0])
             img_rgb = convert_16_to_RGB(img)
-            for track in tracks:
+            for track_id, track in enumerate(tracks):
                 for pt in track.traj:
                     if pt.idx == idx:
                         cv2.circle(img_rgb, (int(pt.x0), int(pt.y0)), 10, (0,0,255), 2)
+                        cv2.putText(img_rgb, str(track_id+1), (int(pt.x0)-5, int(pt.y0)-5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,255), 2)
+                        if pt.status == 1:
+                            roi = get_roi(img, pt.x0, pt.y0, 30, True, flatCopy=False)
+                            if samples.get(track_id) is None:
+                                samples[track_id] = []
+                            else:
+                                samples[track_id].append(roi)
             name_img = os.path.basename(path_img).replace(self.postfix, 'tif')
             path_save = os.path.join(dir_save, name_img)
             cv2.imwrite(path_save, img_rgb)
-        print('Detection result in each frame are drawn and saved in ', dir_save)
+        # save samples to gif
+        for track_id, imgs in samples.items():
+            path_gif = os.path.join(dir_save, f'{self.task}_target{track_id+1}.gif')
+            imageio.mimsave(path_gif, imgs, fps=8)
+        print('Detection result in each frame are drawn and saved in ', dir_save, '\n\n')
 
 
     def save_tracks_txt(self, tracks:list[Track]):
@@ -418,7 +489,6 @@ class DBT(object):
         with open(path_save, 'w') as f:
             f.write('ID, IMG, TRACK_ID, x0, y0, TRACK_ID, x1, y1, ...\n')
             f.write(line)
-        print('Detection results are exported in in ', path_save)   
 
 
 

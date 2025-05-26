@@ -33,7 +33,7 @@ def process_CLASP_seqs():
             config = yaml.safe_load(f)
         
         for task, paths in tasks.items():
-            print(f'\nStart to process task: {task}')
+            print(f'Start to process task: {task}')
             config['task'] = task
             config['path'] = paths
             detector = DBT(config)
