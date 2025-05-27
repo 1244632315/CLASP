@@ -16,7 +16,7 @@ def process_one_seq():
 def process_CLASP_seqs():
     dirs = get_fileList('E:/CLASP', postfix='')
     dirs = sorted(dirs)
-    for dirpath in dirs[2:]:
+    for dirpath in dirs[6:]:
         print(f'\n\n\nCurrent dirpath: {dirpath}')
         paths = get_fileList(dirpath, postfix='fits')
         tasks = {}
@@ -47,4 +47,4 @@ def process_CLASP_seqs():
 
 
 if __name__ == '__main__':
-    process_one_seq()
+    process_CLASP_seqs()

@@ -11,7 +11,7 @@ import imageio.v2 as imageio
 
 from tool import load_img, show_img, draw3D, ax_imshow, get_fileList, get_roi, convert_16_to_RGB
 from extract import extract, extract_sep, extract_NTH, nms
-from register import TriAngleRectifyWithDelaunay, registerPoints
+from register import TriAngleRectifyWithDelaunay, registerPoints, TriAngleRectifyWithTwoStageAndBlock
 from kalman import kalman_smooth
 
 
@@ -200,8 +200,8 @@ class DBT(object):
         num_register_stars = self.params_reg['num_stars']
         ratio = self.params_reg['ratio_len']
         th_len = self.params_reg['th_length']
-        ta1 = TriAngleRectifyWithDelaunay(img1, numStars=num_register_stars, ratio=ratio, thLen=th_len)
-        ta2 = TriAngleRectifyWithDelaunay(img2, numStars=num_register_stars, ratio=ratio, thLen=th_len)
+        ta1 = TriAngleRectifyWithTwoStageAndBlock(img1, numStars=num_register_stars, ratio=ratio)
+        ta2 = TriAngleRectifyWithTwoStageAndBlock(img2, numStars=num_register_stars, ratio=ratio)
         H12, _ = ta1.getH(ta2)
         self.Hs.append(H12)
         if flag_img:

@@ -1,13 +1,12 @@
 # task_name, included in the image name
-task: SKYMAPPER0048-CAM1
+task: SKYMAPPER0029-CAM1
 
 # image paths or image directory path
-path: E:/CLASP/20220929
+path: E:/CLASP/20221027
 postfix: fits
 
 # number of loaded images: num(int), [start, end](list), 'all'(str)
 num_imgs: all
-
 # parameters of image preprocessing
 params_pre:
   # scale the image to x% of the original size
@@ -29,9 +28,9 @@ params_ext:
 # parameters of image registration, only support triangle registration now
 params_reg:
   # the number of extracted stars 
-  num_stars: 25
+  num_stars: 36
   # the length threshold for triangle matching
-  ratio_len: 0.08
+  ratio_len: 0.05
   # the length threshold for incorrect triangle transormation
   th_length: 100
 
