@@ -263,6 +263,26 @@ class DBT(object):
         return delta_t
     
 
+    def precise_locate(self, img, pts, r=10):
+        h, w = img.shape[:2]
+        new_pts = []
+        for (x0, y0) in pts:
+            roi = get_roi(img, x0, y0, r, True).astype(np.float32)
+            th = roi.max()*0.5 if roi.max() < roi.mean() + roi.std() else roi.mean() + roi.std()
+            roi_mask = roi.copy()-th
+            roi_mask[roi_mask<=0] = 0
+            xSum, ySum = 0, 0
+            h, w = roi.shape
+            for i in range(h):
+                for j in range(w):
+                    xSum += roi_mask[i,j]*j
+                    ySum += roi_mask[i,j]*i
+            x = xSum/roi_mask.sum() + x0 - r
+            y = ySum/roi_mask.sum() + y0 - r
+            new_pts.append([x,y])
+        return np.array(new_pts)        
+
+
     def associate_tracks(self, idx, map_sus, pts_cur, delta_t):
         """Associate all the suspected points in the current frame to the history tracks"""
         r_search = self.params_track['association_radius']
@@ -413,7 +433,7 @@ class DBT(object):
             fig, axes = plt.subplots(1,1,figsize=(16,8))
         for track in tracks:
             track.show(fig)
-        if len(tracks)<10: plt.legend()
+        if len(tracks)>0: plt.legend()
         plt.xlim(0, self.w)
         plt.ylim(self.h, 0)
         if len(tracks): plt.tight_layout()
@@ -446,7 +466,8 @@ class DBT(object):
         if not os.path.exists(dir_save): os.makedirs(dir_save)
         samples = {}
         for idx, path_img in enumerate(tqdm(self.list_imgs[1:], desc='Saving images')):
-            img = self.preprocess(self.imread(path_img)[0])
+            img0 = self.imread(path_img)[0]
+            img = self.preprocess(img0)
             img_rgb = convert_16_to_RGB(img)
             for track_id, track in enumerate(tracks):
                 for pt in track.traj:
@@ -477,17 +498,19 @@ class DBT(object):
         path_save = os.path.join(dir_save, f'{self.task}_tracks.csv')
         line = ''
         for idx in range(len(self.list_imgs)):
-            line += f'{idx+1:04d}, {os.path.basename(self.list_imgs[idx])}, '
-            result = {track_id: ' , ' for track_id in range(len(tracks))}
+            line += f'{idx+1:04d},{os.path.basename(self.list_imgs[idx])},'
+            result = {track_id: ',' for track_id in range(len(tracks))}
             for track_id, track in enumerate(tracks):
                 for pt in track.traj:
                     if pt.idx + 1 == idx:
-                        result[track_id] = f'{pt.x0:6.2f}, {pt.y0:6.2f}'
+                        result[track_id] = f'{pt.x0:6.2f},{pt.y0:6.2f}'
             for track_id, pt in result.items(): 
-                line += f'{track_id+1:02d}, {pt}, '
+                line += f'{track_id+1:02d},{pt},'
             line += '\n'
         with open(path_save, 'w') as f:
-            f.write('ID, IMG, TRACK_ID, x0, y0, TRACK_ID, x1, y1, ...\n')
+            header = 'ID,IMG,T1,x1,y1,T2,x2,y2,T3,x3,y3,T4,x4,y4,T5,x5,y5,\
+                        T6,x6,y6,T7,x7,y7,T8,x8,y8,T9,x9,y9\n'
+            f.write(header)
             f.write(line)
 
 

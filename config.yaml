@@ -1,8 +1,8 @@
 # task_name, included in the image name
-task: SKYMAPPER0029-CAM1
+task: SKYMAPPER0030-CAM1
 
 # image paths or image directory path
-path: E:/CLASP/20221027
+path: imgs/flux
 postfix: fits
 
 # number of loaded images: num(int), [start, end](list), 'all'(str)
@@ -63,4 +63,4 @@ params_display:
   # whether to export the detected results to a csv file
   export: true
   # whether to print the detected results
-  print: true
+  print: false
