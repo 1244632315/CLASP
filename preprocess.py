@@ -64,15 +64,20 @@ def show_saved_img():
 
 
 def correct_CLASP_img(img):
-    bias = cv2.imread('./bias.tif', cv2.IMREAD_UNCHANGED)
-    dark = cv2.imread('./dark.tif', cv2.IMREAD_UNCHANGED)
-    flat = cv2.imread('./flat.tif', cv2.IMREAD_UNCHANGED)
+    bias = cv2.imread('./imgs/bias.tif', cv2.IMREAD_UNCHANGED)
+    dark = cv2.imread('./imgs/dark.tif', cv2.IMREAD_UNCHANGED)
+    flat = cv2.imread('./imgs/flat.tif', cv2.IMREAD_UNCHANGED)
     flat_processed = flat-bias
     flat_norm = flat_processed/np.mean(flat_processed[2200:4200, 3800:5800])
     a, b = img-bias, flat_norm
     img_cor = np.divide(a, b, out=np.zeros_like(a, dtype=float), where=(b!=0)) 
-    # oup = np.clip(img_cor, 0, 65535)
-    return img_cor
+    oup = np.clip(img_cor, 0, 65535)
+
+    plt.ion()
+    show_img(bias)
+    show_img(img)
+    plt.show()
+    return oup
 
 
 
@@ -80,7 +85,7 @@ if __name__ == '__main__':
 
     # save_bias_dark()
 
-    img = load_img('./imgs/20220929/SKYMAPPER0031-CAM1-20220929220911268.fits').astype(np.float32)
+    img = load_img('./imgs/flux/SKYMAPPER0030-CAM1-20221025230801786.fits').astype(np.float32)
     # show_saved_img()
     cor = correct_CLASP_img(img)
 
