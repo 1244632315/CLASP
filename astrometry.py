@@ -47,19 +47,12 @@ DATA_DIR = './imgs/flux'
 REF_DIR = './catalogue/gaia'
 BP_MASK_PATH = '{}/bp_master.fits'.format(DATA_DIR)
 KWD = {
-    # 'OBSTYPE' : 'TARGET',
-    #    'CCDXBIN' : 2,
-    #    'CCDSPEED' : 'SLOW',
-    #    'WFFBAND' : 'V'
        'CAM-XBIN' : 1,
     }
 
 SIDEREAL_RATE = 15.041  # arcsec/s
-# ???: PLATESCALE doesn't exist in the header
 PLATESCALE = 1       # 1 sec/s-1
-# ???: the number of camera regions?
 BINNING = 1
-# ???: how to calculate this param in this camera
 BORDER = 30
 
 ASTROMETRY_LOC = '/usr/bin/'
@@ -119,9 +112,7 @@ class Frame:
                 return 0
         
         # check header contains necessary info
-        # ???: what's UT-MID
         if not {'EXPTIME', 'DATE-OBS'} <= set(self.frame_hdr):
-        # if not {'EXPTIME', 'DATE-OBS', 'UT-MID', 'RA', 'DEC'} <= set(self.frame_hdr):
             return 0
         
         # store key params as attributes
@@ -130,17 +121,11 @@ class Frame:
         self.platescale = PLATESCALE * BINNING  # preliminary estimate
         self._star_trail_length()
         
-        # self.utc_mid = Time(datetime.strptime('{}T{}'.format(self.frame_hdr['DATE-OBS'], self.frame_hdr['UT-MID']), '%Y-%m-%dT%H:%M:%S.%f'))
-        # self.utc_start = self.utc_mid - TimeDelta((self.exptime / 2) * u.s)
-        # self.utc_end = self.utc_mid + TimeDelta((self.exptime / 2) * u.s)
-        # ???: replace it 
         self.utc_start = Time(datetime.strptime(self.frame_hdr['DATE-OBS'], '%Y-%m-%dT%H:%M:%S.%f'))
         self.utc_mid = self.utc_start + TimeDelta((self.exptime / 2) * u.s)
         self.utc_end = self.utc_start + TimeDelta(self.exptime * u.s)
         
-        # ???: replace it with MNTDECD
         self.center = SkyCoord(ra='{} hours'.format(self.frame_hdr['MNTRA']), dec='{} deg'.format(self.frame_hdr['MNTDEC']))
-        # self.center = SkyCoord(ra='{} hours'.format(self.frame_hdr['RA']), dec='{} deg'.format(self.frame_hdr['DEC']))
         
         self._chip = 0  # user must load chip
         self._wcs = 0   # user must load wcs
@@ -788,23 +773,8 @@ if __name__ == "__main__":
         sys.exit()
         
     # load bad pixel mask
-    # ???: how to get the frame_mask
-    frame_mask = {i:None for i in range(5)}
-    # with fits.open(BP_MASK_PATH) as bp:
-    #     frame_mask = {}
-    #     for i in range(1,5):
-    #         # ignore bad chip
-    #         if i == 2:
-    #             continue
-    #         frame_mask[i] = bp[i].data.astype(bool)
-    
-    # iterate through available nights
-    # ???: what's UT, similar to SKYMAPPER?
-    # for night_dir in glob.glob('{}/UT*'.format(DATA_DIR)):
-        
-    #     if VERBOSE:
-    #         print('Processing night {}'.format(night_dir.split('/')[-1].split('T')[-1]))
-        
+    mask = None
+
     # for output logs
     out_dir = '{}/output/'.format(DATA_DIR)
     if not os.path.exists(out_dir):
@@ -841,434 +811,279 @@ if __name__ == "__main__":
                 continue
             
             # store chips
-            frame_data, frame_hdr = {}, {}
-            # ???: why it's 1-5
-            # for i in range(1,5):
-            #     # ignore bad chip
-            #     if i == 2:
-            #         continue
-            #     frame_data[i] = f[i].data.astype(float)
-            #     frame_hdr[i] = f[i].header
-            frame_data[0] = f[0].data.astype(float)
-            frame_hdr[0] = f[0].header
-        
-        # iterate through chips
-        for chip_id in frame_data.keys():
-            
-            print('Processing chip {}'.format(chip_id))
-            
-            #if chip_id != 4:
-                #continue
-            
-            data = frame_data[chip_id]
-            mask = frame_mask[chip_id]
-            
+            data = f[0].data.astype(float)
+            frame_hdr = f[0].header
+
             # load current chip
-            if not frame.load_chip(frame_hdr[chip_id]):
+            if not frame.load_chip(frame_hdr):
                 print('FrameWarning: Failed to load chip.')
                 continue
-            
-            ###############################
-            ### subtract sky background ###
-            ###############################
-            try:
-                bkg = sep.Background(data, mask=mask, bw=256, bh=256, fw=10, fh=10)
-            except:
-                data = data.byteswap(True).newbyteorder()  # FITS files can be backwards byte order - SEP needs this fixed
-                bkg = sep.Background(data, mask=mask, bw=256, bh=256, fw=10, fh=10)
-            
-            bkg_rms = bkg.globalrms
-            data -= bkg
-            
-            # if DIAGNOSTICS:
-            #     bkg_image = bkg.back()
-            #     plt.imshow(bkg_image, interpolation='nearest', cmap='gray', origin='lower')
-            #     plt.colorbar()
-            #     plt.show()
-            
-            ###########################
-            ### extract star trails ###
-            ###########################
-            try:
-                star_table = sep.extract(data, 5 * bkg_rms, mask=mask, minarea=100, deblend_cont=1.)  # low threshold to avoid too few candidates
-                # star_table = sep.extract(data, 1.3 * bkg_rms, mask=mask, minarea=100, deblend_cont=1.)  # low threshold to avoid too few candidates
-            except:
-                print('ExtractWarning: deblend overflow.')
-                continue
-            
-            # filter to get star trails
-            l_trail = np.sqrt((star_table['xmax'] - star_table['xmin']) ** 2 +
-                                (star_table['ymax'] - star_table['ymin']) ** 2)
-            
-            star_table = Table(star_table[np.logical_and.reduce([
-                # morphological cuts 
-                # ???: why it's 5?
-                # abs(Angle(star_table['theta'], u.rad).deg) > Angle(np.pi / 2, u.rad).deg - 5.,  # orientation
-                # abs(Angle(star_table['theta'], u.rad).deg) < Angle(np.pi / 2, u.rad).deg + 5.,  # orientation
-                abs(Angle(star_table['theta'], u.rad).deg) > Angle(0, u.rad).deg - 5.,  # orientation
-                abs(Angle(star_table['theta'], u.rad).deg) < Angle(0, u.rad).deg + 5.,  # orientation
-                l_trail > 0.5 * frame.star_trail_length,          # sub-trails
-                l_trail < 1.5 * frame.star_trail_length,          # big oddities
-                # border cuts
-                star_table['xmin'] > BORDER,
-                star_table['xmax'] < frame.chip_width - BORDER,
-                star_table['ymin'] > 3 * frame.star_trail_length / 4,
-                star_table['ymax'] < frame.chip_height - 3 * frame.star_trail_length / 4
-            ])])
         
-            if VERBOSE:
-                print('Found {} stellar candidates.'.format(len(star_table)))
+        ###############################
+        ### subtract sky background ###
+        ###############################
+        try:
+            bkg = sep.Background(data, mask=mask, bw=256, bh=256, fw=10, fh=10)
+        except:
+            data = data.byteswap(True).newbyteorder()  # FITS files can be backwards byte order - SEP needs this fixed
+            bkg = sep.Background(data, mask=mask, bw=256, bh=256, fw=10, fh=10)
+        
+        bkg_rms = bkg.globalrms
+        data -= bkg
+        
+
+        ###########################
+        ### extract star trails ###
+        ###########################
+        try:
+            star_table = sep.extract(data, 5 * bkg_rms, mask=mask, minarea=100, deblend_cont=1.)  # low threshold to avoid too few candidates
+            # star_table = sep.extract(data, 1.3 * bkg_rms, mask=mask, minarea=100, deblend_cont=1.)  # low threshold to avoid too few candidates
+        except:
+            print('ExtractWarning: deblend overflow.')
+            continue
+        
+        # filter to get star trails
+        l_trail = np.sqrt((star_table['xmax'] - star_table['xmin']) ** 2 +
+                            (star_table['ymax'] - star_table['ymin']) ** 2)
+        
+        star_table = Table(star_table[np.logical_and.reduce([
+            # morphological cuts 
+            abs(Angle(star_table['theta'], u.rad).deg) > Angle(0, u.rad).deg - 5.,  # orientation
+            abs(Angle(star_table['theta'], u.rad).deg) < Angle(0, u.rad).deg + 5.,  # orientation
+            l_trail > 0.5 * frame.star_trail_length,          # sub-trails
+            l_trail < 1.5 * frame.star_trail_length,          # big oddities
+            # border cuts
+            star_table['xmin'] > BORDER,
+            star_table['xmax'] < frame.chip_width - BORDER,
+            star_table['ymin'] > 3 * frame.star_trail_length / 4,
+            star_table['ymax'] < frame.chip_height - 3 * frame.star_trail_length / 4
+        ])])
+    
+        if VERBOSE:
+            print('Found {} stellar candidates.'.format(len(star_table)))
+        
+        # check for bad frames
+        if len(star_table) == 0:
+            continue
+        
+        ###################################################################################
+        ### refine trail centroids - place apertures along trail and identify drop-offs ###
+        ###################################################################################
+        
+        flux_fraction = 0.2  # fraction of flux signalling end of trail, from which we track back to along trail to find the half maximum
+        aper_r = 2.  # aperture radius
+        overhang = 0.25  # fraction of star trail for overhang
+        aper_spacing = 0.25  # pixels
+        trail_chunk_factor = 8  # proportion factor of apertures taken as representative of trail for flux estimate
+        n_aper = int((1 / aper_spacing) * (0.5 + overhang) * frame.star_trail_length)  # number of apertures for along-trail profile
+        
+        aper_cross_span = 8  # extent of aperture placement for cross-trail profile [pixels]
+        n_aper_cross = int((1 / aper_spacing) * aper_cross_span)  # number of apertures for cross-trail profile
+        
+        fwhm = np.median(2 * np.sqrt(np.log(2) * (2 * star_table['b'] ** 2)))  # median fwhm for detected star trails
+        
+        star_table['xc'] = np.zeros(len(star_table))
+        star_table['yc'] = np.zeros(len(star_table))
+        star_table['xcerr'] = np.zeros(len(star_table))
+        
+        remove_idx = []  # for removing blended stars
+        for i in range(len(star_table)):
+           
+            ## centroid
+            x_c = star_table['x'][i]
+            y_c = star_table['y'][i]
             
-            # check for bad frames
-            if len(star_table) == 0:
+            # refine x_c using cross-trail profile
+            aper_cross_x = np.linspace(x_c - (aper_cross_span / 2) * np.sin(star_table['theta'][i]), x_c + (aper_cross_span / 2) * np.sin(star_table['theta'][i]), n_aper_cross)
+            aper_cross_y = np.linspace(y_c + (aper_cross_span / 2) * np.cos(star_table['theta'][i]), y_c - (aper_cross_span / 2) * np.cos(star_table['theta'][i]), n_aper_cross)
+            flux_c_cross, _, _ = sep.sum_circle(data, aper_cross_x, aper_cross_y, [aper_r] * n_aper_cross)
+            
+            try:
+                parameters, covariance = curve_fit(gaussian, aper_cross_y, flux_c_cross, p0=(flux_c_cross[n_aper_cross // 2], y_c, fwhm)) 
+                # parameters, covariance = curve_fit(gaussian, aper_cross_x, flux_c_cross, p0=(flux_c_cross[n_aper_cross // 2], x_c, fwhm)) 
+            except:
+                remove_idx.append(i)
                 continue
+            else:
+                _, y_c, _ = parameters
+                
+                # compute fit error
+                c_err = np.sqrt(np.diag(covariance))[1]
             
-            ###################################################################################
-            ### refine trail centroids - place apertures along trail and identify drop-offs ###
-            ###################################################################################
+            # store refined centroid and cross-trail fit errors
+            star_table['xc'][i] = x_c
+            star_table['yc'][i] = y_c
+            star_table['xcerr'] = c_err
             
-            flux_fraction = 0.2  # fraction of flux signalling end of trail, from which we track back to along trail to find the half maximum
-            aper_r = 2.  # aperture radius
-            overhang = 0.25  # fraction of star trail for overhang
-            aper_spacing = 0.25  # pixels
-            trail_chunk_factor = 8  # proportion factor of apertures taken as representative of trail for flux estimate
-            n_aper = int((1 / aper_spacing) * (0.5 + overhang) * frame.star_trail_length)  # number of apertures for along-trail profile
-            
-            aper_cross_span = 8  # extent of aperture placement for cross-trail profile [pixels]
-            n_aper_cross = int((1 / aper_spacing) * aper_cross_span)  # number of apertures for cross-trail profile
-            
-            fwhm = np.median(2 * np.sqrt(np.log(2) * (2 * star_table['b'] ** 2)))  # median fwhm for detected star trails
-            
-            for case in ['s', 'c', 'e']:
-                star_table['x{}'.format(case)] = np.zeros(len(star_table))
-                star_table['y{}'.format(case)] = np.zeros(len(star_table))
-                star_table['x{}err'.format(case)] = np.zeros(len(star_table))
-            
-            remove_idx = []  # for removing blended stars
-            for i in range(len(star_table)):
-    
-                ## upper trail - end point
-                aper_x = np.linspace(star_table['x'][i], star_table['x'][i] + (0.5 + overhang) * np.cos(star_table['theta'][i]) * frame.star_trail_length, n_aper)
-                aper_y = np.linspace(star_table['y'][i], star_table['y'][i] + (0.5 + overhang) * np.sin(star_table['theta'][i]) * frame.star_trail_length, n_aper)
-                
-                flux_up, _, _ = sep.sum_circle(data, aper_x, aper_y, [aper_r] * n_aper)
-                
-                # identify upper drop-off with low flux fraction
-                up_idx = None
-                trail_lvl = np.median(flux_up[:n_aper // trail_chunk_factor])
-                for j in range(len(flux_up)):
-                    if flux_up[j] < flux_fraction * trail_lvl:
-                        up_idx = j
-                        break
-                
-                # remove likely blends
-                if up_idx is None:
-                    remove_idx.append(i)
-                    continue
-                
-                # trace back to half maximum point
-                up_idx_hm = None
-                for j in range(3 * int(fwhm / aper_spacing) + 1):  # allow for minor bleeds
-                    if flux_up[up_idx - j] > 0.5 * trail_lvl:
-                        up_idx_hm = up_idx - j
-                        break
-                
-                # remove likely blends
-                if up_idx_hm is None:
-                    remove_idx.append(i)
-                    continue
-                
-                x_up = aper_x[up_idx_hm] - (0.5 * fwhm * np.cos(star_table['theta'][i]))
-                y_up = aper_y[up_idx_hm] - (0.5 * fwhm * np.sin(star_table['theta'][i]))
-                
-                # refine x_up using cross-trail profile
-                aper_cross_x = np.linspace(x_up - (aper_cross_span / 2) * np.sin(star_table['theta'][i]), x_up + (aper_cross_span / 2) * np.sin(star_table['theta'][i]), n_aper_cross)
-                aper_cross_y = np.linspace(y_up + (aper_cross_span / 2) * np.cos(star_table['theta'][i]), y_up - (aper_cross_span / 2) * np.cos(star_table['theta'][i]), n_aper_cross)
-                flux_up_cross, _, _ = sep.sum_circle(data, aper_cross_x, aper_cross_y, [aper_r] * n_aper_cross)
-                
-                try:
-                    parameters, covariance = curve_fit(gaussian, aper_cross_y, flux_up_cross, p0=(flux_up_cross[n_aper_cross // 2], y_up, fwhm)) 
-                    # parameters, covariance = curve_fit(gaussian, aper_cross_x, flux_up_cross, p0=(flux_up_cross[n_aper_cross // 2], x_up, fwhm)) 
-                except:
-                    remove_idx.append(i)
-                    continue
-                else:
-                    _, y_up, _ = parameters
-                    
-                    # compute fit error
-                    up_err = np.sqrt(np.diag(covariance))[1]
-                    
-                # plot image
-                # plt.plot(aper_y, flux_up, 'k.')
-                # plt.show()
-                
-                # fig, ax = plt.subplots()
-                # data_mask = np.ma.masked_where(mask, data)
-                # m, s = np.mean(data_mask), np.std(data_mask)
-                # im = ax.imshow(data_mask, interpolation='nearest', cmap='gray',
-                #                 vmin=m-s, vmax=m+s, origin='lower')
-                
-                # plt.plot(aper_x, aper_y, 'r.')
-                # plt.plot(x_up, y_up, 'b.')
-                # plt.show()
-                # quit()
-    
-                ## lower trail - start point
-                aper_x = np.linspace(star_table['x'][i], star_table['x'][i] - (0.5 + overhang) * np.cos(star_table['theta'][i]) * frame.star_trail_length, n_aper)
-                aper_y = np.linspace(star_table['y'][i], star_table['y'][i] - (0.5 + overhang) * np.sin(star_table['theta'][i]) * frame.star_trail_length, n_aper)
-    
-                flux_down, _, _ = sep.sum_circle(data, aper_x, aper_y, [aper_r] * n_aper)
-                
-                # identify lower drop-off with low flux fraction
-                down_idx = None
-                trail_lvl = np.median(flux_down[:n_aper // trail_chunk_factor])
-                for j in range(len(flux_down)):
-                    if flux_down[j] < flux_fraction * trail_lvl:
-                        down_idx = j
-                        break
-    
-                # remove likely blends
-                if down_idx is None:
-                    remove_idx.append(i)
-                    continue
-                
-                # trace back to half maximum point
-                down_idx_hm = None
-                for j in range(3 * int(fwhm / aper_spacing) + 1):  # allow for minor bleeds
-                    if flux_down[down_idx - j] > 0.5 * trail_lvl:
-                        down_idx_hm = down_idx - j
-                        break
-                
-                # remove likely blends
-                if down_idx_hm is None:
-                    remove_idx.append(i)
-                    continue
-                
-                x_down = aper_x[down_idx_hm] + (0.5 * fwhm * np.cos(star_table['theta'][i]))
-                y_down = aper_y[down_idx_hm] + (0.5 * fwhm * np.sin(star_table['theta'][i]))
-                
-                # refine x_down using cross-trail profile
-                aper_cross_x = np.linspace(x_down - (aper_cross_span / 2) * np.sin(star_table['theta'][i]), x_down + (aper_cross_span / 2) * np.sin(star_table['theta'][i]), n_aper_cross)
-                aper_cross_y = np.linspace(y_down + (aper_cross_span / 2) * np.cos(star_table['theta'][i]), y_down - (aper_cross_span / 2) * np.cos(star_table['theta'][i]), n_aper_cross)
-                flux_down_cross, _, _ = sep.sum_circle(data, aper_cross_x, aper_cross_y, [aper_r] * n_aper_cross)
-                
-                try:
-                    parameters, covariance = curve_fit(gaussian, aper_cross_y, flux_down_cross, p0=(flux_down_cross[n_aper_cross // 2], y_down, fwhm)) 
-                    # parameters, covariance = curve_fit(gaussian, aper_cross_x, flux_down_cross, p0=(flux_down_cross[n_aper_cross // 2], x_down, fwhm)) 
-                except:
-                    remove_idx.append(i)
-                    continue
-                else:
-                    _, y_down, _ = parameters
-                    
-                    # compute fit error
-                    down_err = np.sqrt(np.diag(covariance))[1]
-                
-                # plt.plot(aper_cross_x, flux_down_cross, 'k.')
-                # plt.plot(aper_cross_x, gaussian(aper_cross_x, amp, x0, sigma), 'b')
-                # plt.show()
-                
-                # fig, ax = plt.subplots()
-                # data_mask = np.ma.masked_where(mask, data)
-                # m, s = np.mean(data_mask), np.std(data_mask)
-                # im = ax.imshow(data_mask, interpolation='nearest', cmap='gray',
-                #                 vmin=m-s, vmax=m+s, origin='lower')
-                # plt.plot(aper_cross_x, aper_cross_y, 'r.')
-                # plt.plot(x_down, y_down, 'b.')
-                # plt.show()
-                
-                # quit()
-                
-                ## centroid
-                x_c = (x_up + x_down) / 2
-                y_c = (y_up + y_down) / 2
-                
-                # refine x_c using cross-trail profile
-                aper_cross_x = np.linspace(x_c - (aper_cross_span / 2) * np.sin(star_table['theta'][i]), x_c + (aper_cross_span / 2) * np.sin(star_table['theta'][i]), n_aper_cross)
-                aper_cross_y = np.linspace(y_c + (aper_cross_span / 2) * np.cos(star_table['theta'][i]), y_c - (aper_cross_span / 2) * np.cos(star_table['theta'][i]), n_aper_cross)
-                flux_c_cross, _, _ = sep.sum_circle(data, aper_cross_x, aper_cross_y, [aper_r] * n_aper_cross)
-                
-                try:
-                    parameters, covariance = curve_fit(gaussian, aper_cross_y, flux_c_cross, p0=(flux_c_cross[n_aper_cross // 2], y_c, fwhm)) 
-                    # parameters, covariance = curve_fit(gaussian, aper_cross_x, flux_c_cross, p0=(flux_c_cross[n_aper_cross // 2], x_c, fwhm)) 
-                except:
-                    remove_idx.append(i)
-                    continue
-                else:
-                    _, y_c, _ = parameters
-                    # _, x_c, _ = parameters
-                    
-                    # compute fit error
-                    c_err = np.sqrt(np.diag(covariance))[1]
-                
-                # store refined centroid and cross-trail fit errors
-                star_table['xc'][i] = x_c
-                star_table['yc'][i] = y_c
-                star_table['xcerr'] = c_err
-                
-                # store refined start/end points and cross-trail fit errors
-                star_table['xs'][i] = x_down
-                star_table['ys'][i] = y_down
-                star_table['xserr'] = down_err
-                
-                star_table['xe'][i] = x_up
-                star_table['ye'][i] = y_up
-                star_table['xeerr'] = up_err
+        # remove blended stars
+        star_table.remove_rows(remove_idx)
+        
+        # check for bad frames
+        if len(star_table) == 0:
+            continue
+        
+        # obtain better flux estimates
+        apertures = RectangularAperture(zip(star_table['xc'], star_table['yc']),
+                                        w=frame.star_trail_length + APERTURE,
+                                        h=APERTURE,
+                                        theta=np.median(star_table['theta']))
+        
+        star_table['flux'] = aperture_photometry(data, apertures, mask=mask, method='subpixel', subpixels=16)['aperture_sum']
+        
+        if DIAGNOSTICS:
+            # plot image
+            fig, ax = plt.subplots()
+            data_mask = np.ma.masked_where(mask, data)
+            m, s = np.mean(data_mask), np.std(data_mask)
+            im = ax.imshow(data_mask, interpolation='nearest', cmap='gray',
+                            vmin=m-s, vmax=m+s, origin='lower')
 
-            # remove blended stars
-            star_table.remove_rows(remove_idx)
-            
-            # check for bad frames
-            if len(star_table) == 0:
+            # plot indicator for each object
+            apertures.plot()
+            plt.show()
+        
+        ###########################################
+        ### astrometry.net for initial solution ###
+        ###########################################
+        
+        # astrometry.net expects 1-index positions
+        star_table['xc'] += 1
+        star_table['yc'] += 1
+        
+        star_table.sort('flux')  # astrometry.net defaults to descending order, by flux
+        star_table.reverse() 
+        
+        # set xy cols to mid-exposure case
+        print('Solving mid-exposure case...')
+        
+        star_table['x'] = star_table['xc']
+        star_table['y'] = star_table['yc']
+        
+        # run astrometry.net
+        with tempfile.TemporaryDirectory() as tempdir:
+            xyls_path = os.path.join(tempdir, 'scratch.xyls')
+            star_table.write(xyls_path, format='fits')
+
+            if runAstrometry(xyls_path, SCALE_LOWER, SCALE_UPPER, frame.chip_width, frame.chip_height, frame.center.ra.deg, frame.center.dec.deg, 10.):
+                # fetch and load relevant outputs
+                corr_table = Table(fits.getdata(os.path.join(tempdir, 'scratch.corr')))
+                wcs_hdr = fits.getheader(os.path.join(tempdir, 'scratch.wcs'))
+                
+                frame.load_corr(corr_table)
+                frame.load_wcs(wcs_hdr)
+            else:
+                print('AstrometryWarning: failed to solve chip.')
                 continue
+        
+        # update star table with preliminary wcs
+        star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
+        
+        ######################################
+        ### fetch appropriate gaia catalog ###
+        ######################################
+        catalog = query_gaia(frame, frame.utc_mid)
+        
+        if DIAGNOSTICS:
+            catx, caty = frame.wcs_to_chip(catalog['ra'], catalog['dec'])
+            catx -= 1
+            caty -= 1
             
-            # obtain better flux estimates
-            apertures = RectangularAperture(zip(star_table['xc'], star_table['yc']),
-                                            w=frame.star_trail_length + APERTURE,
-                                            h=APERTURE,
-                                            theta=np.median(star_table['theta']))
+            fig, ax = plt.subplots()
+            data_mask = np.ma.masked_where(mask, data)
+            m, s = np.mean(data_mask), np.std(data_mask)
+            im = ax.imshow(data_mask, interpolation='nearest', cmap='gray',
+                            vmin=m-s, vmax=m+s, origin='lower')
             
-            star_table['flux'] = aperture_photometry(data, apertures, mask=mask, method='subpixel', subpixels=16)['aperture_sum']
+            plt.plot(catx, caty, 'r.')
+            plt.show()
+        
+        ##########################################################################
+        ### iteratively improve cross-match, WCS fit and zero point estimation ###
+        ##########################################################################
+        fit_iteration = 0
+        revert = 0  # for cases where solution deteriorates
+        fail = 0  # for cases where distortion fitting fails
+        wcs_headers = []
+        while True:
+            # cross-match against catalog to exclude false detections and improve distortion fit
+            try:
+                matched_cat, zp_delta_mag, zp_mean, zp_stddev, zp_filter = cross_match(catalog, star_table, frame)
+            except:
+                fail = 1
+                break
             
-            if DIAGNOSTICS:
-                # plot image
-                fig, ax = plt.subplots()
-                data_mask = np.ma.masked_where(mask, data)
-                m, s = np.mean(data_mask), np.std(data_mask)
-                im = ax.imshow(data_mask, interpolation='nearest', cmap='gray',
-                                vmin=m-s, vmax=m+s, origin='lower')
-
-                # plot indicator for each object
-                apertures.plot()
-                plt.plot(star_table['xs'], star_table['ys'], 'g.')
-                plt.plot(star_table['xe'], star_table['ye'], 'r.')
-                plt.show()
+            # check pre-fit solution quality
+            before_match = check_wcs_quality(frame, star_table[zp_filter], matched_cat[zp_filter])
             
-            ###########################################
-            ### astrometry.net for initial solution ###
-            ###########################################
+            if fit_iteration == 0:
+                for k, v in before_match.items():
+                    frame.frame_hdr.update({'{}B'.format(k): v})
             
-            # astrometry.net expects 1-index positions
-            for case in ['s', 'c', 'e']:
-                star_table['x{}'.format(case)] += 1
-                star_table['y{}'.format(case)] += 1
+            # store current WCS header in case solution deteriorates
+            wcs_headers.append(frame.wcs_hdr)
             
-            star_table.sort('flux')  # astrometry.net defaults to descending order, by flux
-            star_table.reverse() 
+            # fit SIP distortion for trustworthy matches
+            try:
+                fit_distortion(frame, star_table[zp_filter], matched_cat[zp_filter])
+            except:
+                fail = 1
+                break
+            else:
+                fit_iteration += 1
             
-            # set xy cols to mid-exposure case
-            print('Solving mid-exposure case...')
-            
-            star_table['x'] = star_table['xc']
-            star_table['y'] = star_table['yc']
-            
-            # run astrometry.net
-            with tempfile.TemporaryDirectory() as tempdir:
-                xyls_path = os.path.join(tempdir, 'scratch.xyls')
-                star_table.write(xyls_path, format='fits')
-
-                if runAstrometry(xyls_path, SCALE_LOWER, SCALE_UPPER, frame.chip_width, frame.chip_height, frame.center.ra.deg, frame.center.dec.deg, 10.):
-                    # fetch and load relevant outputs
-                    corr_table = Table(fits.getdata(os.path.join(tempdir, 'scratch.corr')))
-                    wcs_hdr = fits.getheader(os.path.join(tempdir, 'scratch.wcs'))
-                    
-                    frame.load_corr(corr_table)
-                    frame.load_wcs(wcs_hdr)
-                else:
-                    print('AstrometryWarning: failed to solve chip.')
-                    continue
-            
-            # update star table with preliminary wcs
+            # update object positions using new WCS solution
             star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
             
-            ######################################
-            ### fetch appropriate gaia catalog ###
-            ######################################
-            catalog = query_gaia(frame, frame.utc_mid)
+            # check post-fit solution quality
+            try:
+                after_match = check_wcs_quality(frame, star_table[zp_filter], matched_cat[zp_filter])
+            except:
+                fail = 1
+                break
             
-            if DIAGNOSTICS:
-                catx, caty = frame.wcs_to_chip(catalog['ra'], catalog['dec'])
-                catx -= 1
-                caty -= 1
-                
-                fig, ax = plt.subplots()
-                data_mask = np.ma.masked_where(mask, data)
-                m, s = np.mean(data_mask), np.std(data_mask)
-                im = ax.imshow(data_mask, interpolation='nearest', cmap='gray',
-                                vmin=m-s, vmax=m+s, origin='lower')
-                
-                plt.plot(catx, caty, 'r.')
-                plt.show()
+            # check if solution has improved
+            match_improvement = [before_match[k] - after_match[k] for k in after_match]
+
+            # deteriorated?
+            if np.mean(match_improvement) < 0:
+                revert = 1
+                break
             
-            ##########################################################################
-            ### iteratively improve cross-match, WCS fit and zero point estimation ###
-            ##########################################################################
-            fit_iteration = 0
-            revert = 0  # for cases where solution deteriorates
-            fail = 0  # for cases where distortion fitting fails
-            wcs_headers = []
-            while True:
-                # cross-match against catalog to exclude false detections and improve distortion fit
-                try:
-                    matched_cat, zp_delta_mag, zp_mean, zp_stddev, zp_filter = cross_match(catalog, star_table, frame)
-                except:
-                    fail = 1
-                    break
-                
-                # check pre-fit solution quality
-                before_match = check_wcs_quality(frame, star_table[zp_filter], matched_cat[zp_filter])
-                
-                if fit_iteration == 0:
-                    for k, v in before_match.items():
-                        frame.frame_hdr.update({'{}B'.format(k): v})
-                
-                # store current WCS header in case solution deteriorates
-                wcs_headers.append(frame.wcs_hdr)
-                
+            # cut-off reached or converged?
+            if fit_iteration > 5 or np.max(match_improvement) < 0.1:
+                break
+        
+        # move on to next chip if distortion fitting fails
+        if fail:
+            print('FitWarning: distortion fitting failed.')
+            continue
+        
+        # revert back to old solution if better
+        if revert:
+            if fit_iteration == 1:
+                frame.load_wcs(wcs_headers[0])  # take original solution
+            else:
+                frame.load_wcs(wcs_headers[-2])  # take two steps back and repeat cross-match
+            
+            # update object positions using reverted WCS solution
+            star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
+            
+            # cross-match with catalog
+            try:
+                matched_cat, zp_delta_mag, zp_mean, zp_stddev, zp_filter = cross_match(catalog, star_table, frame)
+            except:
+                print('FitWarning: diverging solution')
+                continue
+            
+            if fit_iteration > 1:
                 # fit SIP distortion for trustworthy matches
                 try:
                     fit_distortion(frame, star_table[zp_filter], matched_cat[zp_filter])
                 except:
-                    fail = 1
-                    break
-                else:
-                    fit_iteration += 1
+                    print('FitWarning: distortion fitting failed.')
+                    continue
                 
                 # update object positions using new WCS solution
-                star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
-                
-                # check post-fit solution quality
-                try:
-                    after_match = check_wcs_quality(frame, star_table[zp_filter], matched_cat[zp_filter])
-                except:
-                    fail = 1
-                    break
-                
-                # check if solution has improved
-                match_improvement = [before_match[k] - after_match[k] for k in after_match]
-
-                # deteriorated?
-                if np.mean(match_improvement) < 0:
-                    revert = 1
-                    break
-                
-                # cut-off reached or converged?
-                if fit_iteration > 5 or np.max(match_improvement) < 0.1:
-                    break
-            
-            # move on to next chip if distortion fitting fails
-            if fail:
-                print('FitWarning: distortion fitting failed.')
-                continue
-            
-            # revert back to old solution if better
-            if revert:
-                if fit_iteration == 1:
-                    frame.load_wcs(wcs_headers[0])  # take original solution
-                else:
-                    frame.load_wcs(wcs_headers[-2])  # take two steps back and repeat cross-match
-                
-                # update object positions using reverted WCS solution
                 star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
                 
                 # cross-match with catalog
@@ -1277,219 +1092,40 @@ if __name__ == "__main__":
                 except:
                     print('FitWarning: diverging solution')
                     continue
-                
-                if fit_iteration > 1:
-                    # fit SIP distortion for trustworthy matches
-                    try:
-                        fit_distortion(frame, star_table[zp_filter], matched_cat[zp_filter])
-                    except:
-                        print('FitWarning: distortion fitting failed.')
-                        continue
-                    
-                    # update object positions using new WCS solution
-                    star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
-                    
-                    # cross-match with catalog
-                    try:
-                        matched_cat, zp_delta_mag, zp_mean, zp_stddev, zp_filter = cross_match(catalog, star_table, frame)
-                    except:
-                        print('FitWarning: diverging solution')
-                        continue
-                
-                # check post-fit solution quality
-                try:
-                    after_match = check_wcs_quality(frame, star_table[zp_filter], matched_cat[zp_filter])
-                except:
-                    print('FitWarning: diverging solution')
-                    continue
-                
-            for k, v in after_match.items():
-                frame.frame_hdr.update({'{}A'.format(k): v})
-                
-                if VERBOSE:
-                    if k == 'XY':
-                        print('Astrometric quality: {} px'.format(v))
             
-            # update chip header with zp info and log star table
-            frame.frame_hdr.update({'ZP_MEAN': round(zp_mean, 3)})
+            # check post-fit solution quality
+            try:
+                after_match = check_wcs_quality(frame, star_table[zp_filter], matched_cat[zp_filter])
+            except:
+                print('FitWarning: diverging solution')
+                continue
+            
+        for k, v in after_match.items():
+            frame.frame_hdr.update({'{}A'.format(k): v})
+            
             if VERBOSE:
-                print('Zero point: {}'.format(round(zp_mean, 3)))
-            
-            frame.frame_hdr.update({'ZP_STD': round(zp_stddev, 3)})
-            frame.frame_hdr.update({'ZP_CNT': np.sum(zp_filter)})
-            
-            frame.load_stars(hstack([star_table, Table(data=[zp_filter], names=['ZP_FILTER'])]))
-            
-            # save mid-exposure output file
-            out_path = '{}/{}_{}_c.fits'.format(out_dir, file_prefix, chip_id)
-            frame.save_chip(out_path)
-            
-            ###################################################################
-            ### repeat astrometric calibration for start/end exposure cases ###
-            ###################################################################
-            
-            for case in ['s', 'e']:
-                
-                print('Solving {}-exposure case...'.format(case))
-                
-                # update star xy to relevant case
-                star_table['x'] = star_table['x{}'.format(case)]
-                star_table['y'] = star_table['y{}'.format(case)]
-            
-                # run astrometry.net
-                with tempfile.TemporaryDirectory() as tempdir:
-                    xyls_path = os.path.join(tempdir, 'scratch.xyls')
-                    star_table.write(xyls_path, format='fits')
-
-                    if runAstrometry(xyls_path, SCALE_LOWER, SCALE_UPPER, frame.chip_width, frame.chip_height, frame.center.ra.deg, frame.center.dec.deg, 10.):
-                        # fetch and load relevant outputs
-                        corr_table = Table(fits.getdata(os.path.join(tempdir, 'scratch.corr')))
-                        wcs_hdr = fits.getheader(os.path.join(tempdir, 'scratch.wcs'))
-                        frame.load_corr(corr_table)
-                        frame.load_wcs(wcs_hdr)
-                    else:
-                        print('AstrometryWarning: failed to solve chip.')
-                        continue
-                
-                # update star table with preliminary wcs
-                star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
-                
-                # fetch appropriate gaia catalog
-                if case == 's':
-                    epoch = frame.utc_start
-                else:
-                    epoch = frame.utc_end
-                
-                catalog = query_gaia(frame, epoch)
-                
-                # iteratively improve cross-match, WCS fit and zero point estimation 
-                fit_iteration = 0
-                revert = 0  # for cases where solution deteriorates
-                fail = 0  # for cases where distortion fitting fails
-                wcs_headers = []
-                while True:
-                    # cross-match against catalog to exclude false detections and improve distortion fit
-                    try:
-                        matched_cat, zp_delta_mag, zp_mean, zp_stddev, zp_filter = cross_match(catalog, star_table, frame)
-                    except:
-                        fail = 1
-                        break
-                    
-                    # check pre-fit solution quality
-                    before_match = check_wcs_quality(frame, star_table[zp_filter], matched_cat[zp_filter])
-                
-                    if fit_iteration == 0:
-                        for k, v in before_match.items():
-                            frame.frame_hdr.update({'{}B'.format(k): v})
-                    
-                    # store current WCS header in case solution deteriorates
-                    wcs_headers.append(frame.wcs_hdr)
-                
-                    # fit SIP distortion for trustworthy matches
-                    try:
-                        fit_distortion(frame, star_table[zp_filter], matched_cat[zp_filter])
-                    except:
-                        fail = 1
-                        break
-                    else:
-                        fit_iteration += 1
-                
-                    # update object positions using new WCS solution
-                    star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
-                
-                    # check post-fit solution quality
-                    try:
-                        after_match = check_wcs_quality(frame, star_table[zp_filter], matched_cat[zp_filter])
-                    except:
-                        fail = 1
-                        break
-                    
-                    # check if solution has improved
-                    match_improvement = [before_match[k] - after_match[k] for k in after_match]
-
-                    # deteriorated?
-                    if np.mean(match_improvement) < 0:
-                        revert = 1
-                        break
-                
-                    # cut-off reached or converged?
-                    if fit_iteration > 5 or np.max(match_improvement) < 0.1:
-                        break
-                
-                # move on to next chip if distortion fitting fails
-                if fail:
-                    print('FitWarning: distortion fitting failed.')
-                    continue
-                
-                # revert back to old solution if better
-                if revert:
-                    if fit_iteration == 1:
-                        frame.load_wcs(wcs_headers[0])  # take original solution
-                    else:
-                        frame.load_wcs(wcs_headers[-2])  # take two steps back and repeat cross-match
-                
-                    # update object positions using reverted WCS solution
-                    star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
-                
-                    # cross-match with catalog
-                    try:
-                        matched_cat, zp_delta_mag, zp_mean, zp_stddev, zp_filter = cross_match(catalog, star_table, frame)
-                    except:
-                        print('FitWarning: diverging solution')
-                        continue
-                
-                    if fit_iteration > 1:
-                        # fit SIP distortion for trustworthy matches
-                        try:
-                            fit_distortion(frame, star_table[zp_filter], matched_cat[zp_filter])
-                        except:
-                            print('FitWarning: distortion fitting failed.')
-                            continue
-                    
-                        # update object positions using new WCS solution
-                        star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
-                    
-                        # cross-match with catalog
-                        try:
-                            matched_cat, zp_delta_mag, zp_mean, zp_stddev, zp_filter = cross_match(catalog, star_table, frame)
-                        except:
-                            print('FitWarning: diverging solution')
-                            continue
-                
-                    # check post-fit solution quality
-                    try:
-                        after_match = check_wcs_quality(frame, star_table[zp_filter], matched_cat[zp_filter])
-                    except:
-                        print('FitWarning: diverging solution')
-                        continue
-                
-                for k, v in after_match.items():
-                    frame.frame_hdr.update({'{}A'.format(k): v})
-                    
-                    if VERBOSE:
-                        if k == 'XY':
-                            print('Astrometric quality: {} px'.format(v))
-                
-                # update chip header with zp info and log star table
-                frame.frame_hdr.update({'ZP_MEAN': round(zp_mean, 3)})
-                if VERBOSE:
-                    print('Zero point: {}'.format(round(zp_mean, 3)))
-                
-                frame.frame_hdr.update({'ZP_STD': round(zp_stddev, 3)})
-                frame.frame_hdr.update({'ZP_CNT': np.sum(zp_filter)})
-                
-                star_table['ZP_FILTER'] = zp_filter
-                frame.load_stars(star_table)
-                
-                # save case output file
-                out_path = '{}/{}_{}_{}.fits'.format(out_dir, file_prefix, chip_id, case)
-                frame.save_chip(out_path)
-            
-            # reset frame for next chip
-            frame.reset()
-            
-            # update progress log
-            log['FILE'][fp] = file_prefix
-            log.write(log_path, format='csv', overwrite=True)
-            
-            print('Chip solved.')
+                if k == 'XY':
+                    print('Astrometric quality: {} px'.format(v))
+        
+        # update chip header with zp info and log star table
+        frame.frame_hdr.update({'ZP_MEAN': round(zp_mean, 3)})
+        if VERBOSE:
+            print('Zero point: {}'.format(round(zp_mean, 3)))
+        
+        frame.frame_hdr.update({'ZP_STD': round(zp_stddev, 3)})
+        frame.frame_hdr.update({'ZP_CNT': np.sum(zp_filter)})
+        
+        frame.load_stars(hstack([star_table, Table(data=[zp_filter], names=['ZP_FILTER'])]))
+        
+        # save mid-exposure output file
+        out_path = '{}/{}_c.fits'.format(out_dir, file_prefix)
+        frame.save_chip(out_path)
+        
+        # reset frame for next chip
+        frame.reset()
+        
+        # update progress log
+        log['FILE'][fp] = file_prefix
+        log.write(log_path, format='csv', overwrite=True)
+        
+        print('Chip solved.')
