@@ -13,6 +13,7 @@ import subprocess
 import numpy as np
 from datetime import datetime
 import sep
+from pandas import read_csv
 from scipy.optimize import curve_fit
 from astropy.io import fits
 from astropy.table import (
@@ -42,9 +43,13 @@ from photutils.aperture import (
     aperture_photometry
 )
 
+from tool import get_roi
+
+
 # user inputs
 DATA_DIR = './imgs/flux'
 REF_DIR = './catalogue/gaia'
+DETECTION_CSV = './imgs/flux/results/SKYMAPPER0030-CAM1/SKYMAPPER0030-CAM1_tracks.csv'
 BP_MASK_PATH = '{}/bp_master.fits'.format(DATA_DIR)
 KWD = {
        'CAM-XBIN' : 1,
@@ -71,7 +76,7 @@ GAIA_CAT_RA = np.arange(GAIA_FIELD_SIZE / 2, 360., GAIA_FIELD_SIZE)
 GAIA_CAT_DEC = np.arange(-GAIA_DEC_LIM + GAIA_FIELD_SIZE / 2, GAIA_DEC_LIM, GAIA_FIELD_SIZE)
 APERTURE = 10  # pixels
 
-DIAGNOSTICS = 1
+DIAGNOSTICS = 0
 VERBOSE = 1
 
 if DIAGNOSTICS:
@@ -238,6 +243,19 @@ class Frame:
         self.stars = star_table
         return None
     
+
+    def load_tars(self, tar_table):
+        """
+        Load table of target 
+        
+        Parameters
+        ----------
+        star_table : astropy.table.Table
+            Table containing star trail info
+        """
+        self.tars = tar_table
+        return None
+    
     def chip_to_wcs(self, x, y):
         """
         Convert a list of chip xy coords to RA/Dec coords
@@ -299,8 +317,12 @@ class Frame:
         hdu_list.append(fits.PrimaryHDU(header=self.frame_hdr))
         
         # log star trails and chip header
-        if self.stars:
+        if self.stars: 
             hdu_list.append(fits.BinTableHDU(data=self.stars, header=self.chip_hdr))
+        
+        # log targets and chip header
+        if self.tars: 
+            hdu_list.append(fits.BinTableHDU(data=self.tars, header=self.chip_hdr))
         
         # log astrometry.net corr table and post-fit wcs header
         if self.corr and self._wcs:
@@ -316,6 +338,7 @@ class Frame:
         self._unpack()
         self.corr = None
         self.stars = None
+        self.tars = None
         return None
 
 def trail_length(exp_time, plate_scale, rate):
@@ -576,7 +599,7 @@ def query_gaia(frame, epoch):
     catalog = catalog[(bp_rp > -0.5) & (bp_rp < 5.)]
     
     # convert photometry to johnson v
-    catalog = gaia_g_to_johnson_v(catalog)
+    # catalog = gaia_g_to_johnson_v(catalog)
     
     if VERBOSE:
         print('Keeping {} unblended comparison stars'.format(len(catalog)))
@@ -631,7 +654,7 @@ def cross_match(catalog, star_table, frame):
     
     zp_mask = (delta_xy > 10) | blended
     
-    zp_delta_mag = matched_cat['johnson_v'] + 2.5 * np.log10(star_table['flux'] / frame.exptime)
+    zp_delta_mag = matched_cat['phot_g_mean_mag'] + 2.5 * np.log10(star_table['flux'] / frame.exptime)
     zp_mean, _, zp_stddev = sigma_clipped_stats(np.array(zp_delta_mag), mask=zp_mask, sigma=3)
     
     zp_filter = np.logical_and.reduce([
@@ -641,11 +664,11 @@ def cross_match(catalog, star_table, frame):
     ])
     
     if DIAGNOSTICS:
-        plt.plot(matched_cat['johnson_v'], zp_delta_mag, '.', color='#cccccc')
-        plt.plot(matched_cat['johnson_v'][zp_filter], zp_delta_mag[zp_filter], 'k.')
+        plt.plot(matched_cat['phot_g_mean_mag'], zp_delta_mag, '.', color="#b64d4d")
+        plt.plot(matched_cat['phot_g_mean_mag'][zp_filter], zp_delta_mag[zp_filter], 'k.')
         plt.axhline(zp_mean)
-        plt.xlabel('Johnson V')
-        plt.ylabel('Zero Point (Johnson V)')
+        plt.xlabel('Gaia-G')
+        plt.ylabel('Zero Point (Gaia-G)')
         plt.show()
     
     return matched_cat, zp_delta_mag, zp_mean, zp_stddev, zp_filter
@@ -765,12 +788,66 @@ def fit_distortion(frame, star_table, catalog):
     frame.load_wcs(frame.wcs_hdr)
     return None
 
+
+
+
+class TrackQuery:
+    def __init__(self, path_csv):
+        self.data = read_csv(path_csv)
+
+    def query_frame(self, frame):
+        if isinstance(frame, str):
+            mask = self.data['IMG'] == frame
+            raw = self.data[mask]
+            track = []
+            for track_id in range(1, 10):
+                if np.isnan(raw['x{}'.format(track_id)].item()): 
+                    continue
+                else:
+                    x, y = float(raw['x{}'.format(track_id)].item()), float(raw['y{}'.format(track_id)].item())
+                    track.append([track_id, x , y])
+        else:
+            raise KeyError('Unsupported query keywords!!!')
+        return np.asarray(track)
+    
+    def extract_feature(self, img, frame, ratio=0.2):
+        coords = self.query_frame(frame)
+        if len(coords) == 0:
+            return None
+        else:
+            targets = {}
+            for (idx, x_scale, y_scale) in coords:
+                x0, y0 = x_scale / ratio, y_scale / ratio
+                r = 25
+                roi = np.ascontiguousarray(get_roi(img, x0, y0, r), np.float32)
+                bkg = sep.Background(roi, bw=32, bh=32, fw=3, fh=3)
+                sub = roi - bkg.back()
+                objects = sep.extract(sub, 3, err=bkg.globalrms, deblend_cont=1)
+                if objects.size > 0:
+                    dist = np.hypot(objects['x'] - r, objects['y'] - r)
+                    target_idx = np.argmin(dist)
+                    target = objects[target_idx]
+                    target['x'] += (x0 - r)
+                    target['y'] += (y0 - r)
+                    targets[idx] = target
+            tar_table = Table(np.asarray(list(targets.values())))
+            tar_table['idx'] = list(targets.keys())
+            return tar_table
+
+
+
 if __name__ == "__main__":
     
     # check data dir
     if not os.path.exists(DATA_DIR):
         print('Data directory not found.')
         sys.exit()
+    
+    # check detection results csv file
+    if not os.path.exists(DETECTION_CSV):
+        print('Detection results not found. ')
+        sys.exit()
+    tracks = TrackQuery(DETECTION_CSV)
         
     # load bad pixel mask
     mask = None
@@ -837,7 +914,6 @@ if __name__ == "__main__":
         ###########################
         try:
             star_table = sep.extract(data, 5 * bkg_rms, mask=mask, minarea=100, deblend_cont=1.)  # low threshold to avoid too few candidates
-            # star_table = sep.extract(data, 1.3 * bkg_rms, mask=mask, minarea=100, deblend_cont=1.)  # low threshold to avoid too few candidates
         except:
             print('ExtractWarning: deblend overflow.')
             continue
@@ -865,7 +941,14 @@ if __name__ == "__main__":
         # check for bad frames
         if len(star_table) == 0:
             continue
-        
+
+
+        ###########################
+        ### obtain target detection results from local files ###
+        ###########################
+        tar_table = tracks.extract_feature(data, file_path.split('/')[-1])
+
+
         ###################################################################################
         ### refine trail centroids - place apertures along trail and identify drop-offs ###
         ###################################################################################
@@ -977,6 +1060,7 @@ if __name__ == "__main__":
         
         # update star table with preliminary wcs
         star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
+        if tar_table: tar_table['ra'], tar_table['dec'] = frame.chip_to_wcs(tar_table['x'], tar_table['y'])
         
         ######################################
         ### fetch appropriate gaia catalog ###
@@ -1033,6 +1117,7 @@ if __name__ == "__main__":
             
             # update object positions using new WCS solution
             star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
+            if tar_table: tar_table['ra'], tar_table['dec'] = frame.chip_to_wcs(tar_table['x'], tar_table['y'])
             
             # check post-fit solution quality
             try:
@@ -1067,6 +1152,7 @@ if __name__ == "__main__":
             
             # update object positions using reverted WCS solution
             star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
+            if tar_table: tar_table['ra'], tar_table['dec'] = frame.chip_to_wcs(tar_table['x'], tar_table['y'])
             
             # cross-match with catalog
             try:
@@ -1085,6 +1171,7 @@ if __name__ == "__main__":
                 
                 # update object positions using new WCS solution
                 star_table['ra'], star_table['dec'] = frame.chip_to_wcs(star_table['x'], star_table['y'])
+                if tar_table: tar_table['ra'], tar_table['dec'] = frame.chip_to_wcs(tar_table['x'], tar_table['y'])
                 
                 # cross-match with catalog
                 try:
@@ -1116,6 +1203,7 @@ if __name__ == "__main__":
         frame.frame_hdr.update({'ZP_CNT': np.sum(zp_filter)})
         
         frame.load_stars(hstack([star_table, Table(data=[zp_filter], names=['ZP_FILTER'])]))
+        frame.load_tars(tar_table)
         
         # save mid-exposure output file
         out_path = '{}/{}_c.fits'.format(out_dir, file_prefix)

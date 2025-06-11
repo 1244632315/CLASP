@@ -1,49 +1,40 @@
 import os
-import sep
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 from astropy.io import fits
-from skimage.segmentation import flood
-
-from tool import get_roi, show_img
-
-ratio = 0.2
-path_dir = 'imgs/flux'
-task = 'SKYMAPPER0030-CAM1'
-track_csv = f'{path_dir}/results/{task}/{task}_tracks.csv'
-df = pd.read_csv(track_csv)
-info = df[['IMG', 'T5', 'x5', 'y5']]
-
-for idx, row in info.iterrows():
-    if row.isna().sum(): continue
-    name_img, idx, x, y = row.values
-    path_fits = os.path.join(path_dir, name_img)
-    hudl = fits.open(path_fits)[0]
-    img = hudl.data
-    header = hudl.header
-
-    # extract local roi 
-    x0, y0 = x/ratio, y/ratio
-    r = 100
-    roi = np.ascontiguousarray(get_roi(img, x0, y0, r), np.float32)
-    bkg = sep.Background(roi, bw=32, bh=32, fw=3, fh=3)
-    sub = roi - bkg.back()
-    objects = sep.extract(sub, 3, err=bkg.globalrms, deblend_cont=1)
-    dist = np.hypot(objects['x'] - r, objects['y'] - r)
-    target_idx = np.argmin(dist)
-    target = objects[target_idx]
-
-    # 获取 flux 值（sep 已返回 flux，若没有也可单独测光）
-    flux = target['flux']
-    x, y = target['x'], target['y']
-    print(f"目标位置: ({x:.1f}, {y:.1f}), flux: {flux:.2f}")
-
-    plt.ion()
-    show_img(sub)
-    plt.scatter(objects['x'], objects['y'], s=30, facecolors='none', edgecolors='red')
-    plt.show()
+from astropy.stats import sigma_clip
 
 
+path_dir = './imgs/flux/output/'
+list_fits = [path_dir+x for x in os.listdir(path_dir) if x.endswith('.fits')][1:]
+fluxs = {x:{} for x in range(1,11)}
+idxs = []
+for i, path_fits in enumerate(list_fits):
+    hdu_list = fits.open(path_fits)
+    tar_info = hdu_list[2].data
+    for row in tar_info:
+        fluxs[row['idx']][i] = row['flux'].item()
+        idxs.append(row['idx'].item())
+fluxs = {k: v for k, v in fluxs.items() if k in set(idxs)}
+num_tracks = fluxs.__len__()
 
+plt.ion()
+fig, axes = plt.subplots(num_tracks, 1, figsize=(14, num_tracks), sharex=True)
+markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'X', 'h']
+cmap = cm.get_cmap('tab20', 8)
+for track_id, info in fluxs.items():
+    if len(info) == 0: continue
+    frame = np.asarray(list(info.keys()))
+    flux = np.asarray(list(info.values()))
+    flux_clipped = sigma_clip(flux, sigma=3, maxiters=3)
+    flux_clean = flux_clipped.data[~flux_clipped.mask]
+    frame_clean = frame[~(flux_clipped.mask)]
 
+    color = cmap(track_id)
+    marker = markers[track_id % len(markers)]
+    ax = axes[track_id-1]
+    ax.scatter(frame_clean, flux_clean, color=color, label=str(track_id), edgecolors='k')
+    ax.legend()
+fig.tight_layout()
+plt.savefig(f'{path_dir}/flux.png', dpi=500)
